@@ -94,6 +94,40 @@ interface PricingContext {
   defaultEnvFactors: Map<string, number>;
 }
 
+interface TimePhase {
+  start: number;
+  end: number;
+  totalQty: number;
+  items: { pkgId: string; qty: number; term: number }[];
+}
+
+interface PhasePrice {
+  unitPrice: number;
+  duration: number;
+  totalQty: number;
+}
+
+interface WeightedPriceData {
+  pkgId: string;
+  weightedPrice: number;
+  totalWeight: number;
+  finalPrice?: number;
+  phasesList: {
+    phase: string;
+    months: number;
+    unitPrice: number;
+    totalQty: number;
+  }[];
+}
+
+interface QuotePackage {
+  id: string;
+  term_months: number;
+  start_date?: string;
+  end_date?: string;
+  quote_items: QuoteItem[];
+}
+
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
@@ -463,6 +497,279 @@ function aggregateQuantities(
 }
 
 // ============================================================================
+// TIME-PHASED AGGREGATION
+// Calculates quantities per time phase based on contract end dates,
+// then computes weighted-average prices based on phase durations
+// ============================================================================
+
+/**
+ * Calculate time-phased quantities across all packages.
+ * Phases are determined by unique contract end points.
+ *
+ * Example: If packages have 12, 24, and 36 month terms:
+ * - Phase 1-12: all items active
+ * - Phase 13-24: 24 and 36 month items active
+ * - Phase 25-36: only 36 month items active
+ */
+function calculateTimePhaseQuantities(
+  packages: QuotePackage[],
+  skus: Map<string, Sku>
+): Map<string, Map<string, TimePhase>> {
+  const skuPhases = new Map<string, Map<string, TimePhase>>();
+
+  // Collect all unique term end points
+  const termEndPoints = new Set<number>();
+  termEndPoints.add(1); // Start at month 1
+
+  for (const pkg of packages) {
+    for (const item of pkg.quote_items) {
+      const term = item.term_months ?? pkg.term_months;
+      // Add the month AFTER the term ends (exclusive endpoint)
+      termEndPoints.add(term + 1);
+    }
+  }
+
+  // Sort term points
+  const sortedTerms = Array.from(termEndPoints).sort((a, b) => a - b);
+
+  // For each SKU, calculate quantities in each time period
+  for (const pkg of packages) {
+    for (const item of pkg.quote_items) {
+      const sku = skus.get(item.sku_id);
+      if (!sku || sku.is_base_charge) continue;
+
+      const skuId = item.sku_id;
+      const qty = item.quantity;
+      const term = item.term_months ?? pkg.term_months;
+
+      if (!skuPhases.has(skuId)) {
+        skuPhases.set(skuId, new Map());
+      }
+
+      const phases = skuPhases.get(skuId)!;
+
+      // Track this item's contribution to each phase
+      for (let i = 0; i < sortedTerms.length - 1; i++) {
+        const phaseStart = sortedTerms[i];
+        const phaseEnd = sortedTerms[i + 1] - 1; // End is inclusive
+
+        // Create phase key showing inclusive range
+        const phaseKey = `${phaseStart}-${phaseEnd}`;
+
+        // Item is active during this phase if the phase starts within the item's term
+        if (phaseStart <= term) {
+          if (!phases.has(phaseKey)) {
+            phases.set(phaseKey, {
+              start: phaseStart,
+              end: phaseEnd,
+              totalQty: 0,
+              items: [],
+            });
+          }
+
+          const phase = phases.get(phaseKey)!;
+          phase.totalQty += qty;
+          phase.items.push({
+            pkgId: pkg.id,
+            qty: qty,
+            term: term,
+          });
+        }
+      }
+    }
+  }
+
+  return skuPhases;
+}
+
+/**
+ * Calculate weighted-average unit prices for each SKU/package combination.
+ * Weights are based on the duration of each phase.
+ */
+function calculateTimeWeightedPrices(
+  timePhaseData: Map<string, Map<string, TimePhase>>,
+  ctx: PricingContext
+): Map<string, Map<string, WeightedPriceData>> {
+  const weightedPrices = new Map<string, Map<string, WeightedPriceData>>();
+
+  for (const [skuId, phases] of timePhaseData) {
+    weightedPrices.set(skuId, new Map());
+    const skuPrices = weightedPrices.get(skuId)!;
+
+    // Calculate unit price for each phase based on total quantity
+    const phasePrices = new Map<string, PhasePrice>();
+
+    for (const [phaseKey, phaseInfo] of phases) {
+      try {
+        const unitPrice = findUnitPrice(ctx, skuId, phaseInfo.totalQty);
+        phasePrices.set(phaseKey, {
+          unitPrice: unitPrice,
+          duration: phaseInfo.end - phaseInfo.start + 1,
+          totalQty: phaseInfo.totalQty,
+        });
+      } catch {
+        // Skip if price not found
+      }
+    }
+
+    // Calculate weighted average price for each item based on its term
+    for (const [phaseKey, phaseInfo] of phases) {
+      for (const item of phaseInfo.items) {
+        const key = `${item.pkgId}_${skuId}`;
+
+        if (!skuPrices.has(key)) {
+          skuPrices.set(key, {
+            pkgId: item.pkgId,
+            weightedPrice: 0,
+            totalWeight: 0,
+            phasesList: [],
+          });
+        }
+
+        const data = skuPrices.get(key)!;
+
+        // Calculate how much of this item's term falls within this phase
+        const phaseStart = phaseInfo.start;
+        const phaseEnd = Math.min(phaseInfo.end, item.term);
+        const phaseDuration = phaseEnd - phaseStart + 1;
+
+        if (phaseDuration > 0 && phasePrices.has(phaseKey)) {
+          const priceData = phasePrices.get(phaseKey)!;
+          const weight = phaseDuration;
+          const price = priceData.unitPrice;
+
+          data.weightedPrice += price * weight;
+          data.totalWeight += weight;
+
+          // Store phase data for display
+          data.phasesList.push({
+            phase: phaseKey,
+            months: phaseDuration,
+            unitPrice: price,
+            totalQty: phaseInfo.totalQty,
+          });
+        }
+      }
+    }
+
+    // Calculate final weighted average for each package/SKU combination
+    for (const [, data] of skuPrices) {
+      if (data.totalWeight > 0) {
+        data.finalPrice = data.weightedPrice / data.totalWeight;
+      }
+    }
+  }
+
+  return weightedPrices;
+}
+
+/**
+ * Calculate pricing for a single item using time-weighted prices if available.
+ */
+function calculateItemPricingWithPhases(
+  ctx: PricingContext,
+  item: QuoteItem,
+  packageTermMonths: number,
+  weightedPrices: Map<string, Map<string, WeightedPriceData>> | null
+): PricingResult {
+  const sku = ctx.skus.get(item.sku_id);
+  if (!sku) {
+    throw new Error(`SKU not found: ${item.sku_id}`);
+  }
+
+  const termMonths = item.term_months ?? packageTermMonths;
+  const qty = item.quantity;
+
+  const result: PricingResult = {
+    item_id: item.id,
+    list_price: 0,
+    volume_discount_pct: 0,
+    term_discount_pct: 0,
+    env_factor: 1,
+    unit_price: 0,
+    total_discount_pct: 0,
+    usage_total: 0,
+    base_charge: 0,
+    monthly_total: 0,
+    annual_total: 0,
+    aggregated_qty: null,
+    pricing_phases: null,
+  };
+
+  if (sku.is_base_charge) {
+    // Base charge pricing
+    const baseMrc = calculateBaseCharge(ctx, sku.id, termMonths, sku.category);
+    const listBaseMrc = calculateBaseCharge(ctx, sku.id, 12, sku.category);
+
+    result.base_charge = baseMrc;
+    result.monthly_total = baseMrc;
+    result.unit_price = baseMrc;
+    result.list_price = listBaseMrc;
+
+    if (listBaseMrc > 0) {
+      result.term_discount_pct = round2((1 - baseMrc / listBaseMrc) * 100);
+      result.total_discount_pct = result.term_discount_pct;
+    }
+  } else {
+    // Usage-based pricing
+
+    // List price (qty=1, no discounts)
+    try {
+      result.list_price = findUnitPrice(ctx, sku.id, 1);
+    } catch {
+      result.list_price = 0;
+    }
+
+    // Check for time-weighted price
+    let priceAtQty: number;
+    const key = `${item.package_id}_${item.sku_id}`;
+    const skuWeightedPrices = weightedPrices?.get(item.sku_id);
+    const weightedData = skuWeightedPrices?.get(key);
+
+    if (weightedData?.finalPrice !== undefined) {
+      priceAtQty = weightedData.finalPrice;
+      // Store phase info for reference
+      if (weightedData.phasesList.length > 0) {
+        result.pricing_phases = weightedData.phasesList;
+        // Calculate aggregated qty from phases
+        const maxQty = Math.max(...weightedData.phasesList.map(p => p.totalQty));
+        result.aggregated_qty = maxQty;
+      }
+    } else {
+      priceAtQty = findUnitPrice(ctx, sku.id, qty);
+    }
+
+    // Volume discount
+    if (result.list_price > 0) {
+      result.volume_discount_pct = round2((1 - priceAtQty / result.list_price) * 100);
+    }
+
+    // Term factor
+    const termFactor = getTermFactor(ctx, sku.category, termMonths);
+    result.term_discount_pct = round2((1 - termFactor) * 100);
+
+    // Environment factor
+    result.env_factor = getEnvFactor(ctx, sku.id, item.environment);
+
+    // Final unit price
+    result.unit_price = round4(priceAtQty * termFactor * result.env_factor);
+
+    // Total discount
+    if (result.list_price > 0) {
+      result.total_discount_pct = round2((1 - result.unit_price / result.list_price) * 100);
+    }
+
+    // Totals
+    result.usage_total = round2(result.unit_price * qty);
+    result.monthly_total = result.usage_total;
+  }
+
+  result.annual_total = round2(result.monthly_total * 12);
+
+  return result;
+}
+
+// ============================================================================
 // LOAD PRICING CONTEXT FROM DATABASE
 // ============================================================================
 
@@ -598,21 +905,31 @@ serve(async (req) => {
         throw new Error('Quote not found');
       }
 
+      // Convert packages to typed format
+      const packages: QuotePackage[] = quote.quote_packages.map((pkg: any) => ({
+        id: pkg.id,
+        term_months: pkg.term_months,
+        start_date: pkg.start_date,
+        end_date: pkg.end_date,
+        quote_items: pkg.quote_items,
+      }));
+
       // Collect all items for aggregation
       const allItems: QuoteItem[] = [];
       const packageTerms = new Map<string, number>();
 
-      for (const pkg of quote.quote_packages) {
+      for (const pkg of packages) {
         packageTerms.set(pkg.id, pkg.term_months);
         for (const item of pkg.quote_items) {
           allItems.push(item);
         }
       }
 
-      // Calculate aggregated quantities if enabled
-      let aggregatedQtys: Map<string, number> | null = null;
+      // Calculate time-phased weighted prices if aggregation is enabled
+      let weightedPrices: Map<string, Map<string, WeightedPriceData>> | null = null;
       if (quote.use_aggregated_pricing) {
-        aggregatedQtys = aggregateQuantities(allItems, ctx.skus);
+        const timePhaseData = calculateTimePhaseQuantities(packages, ctx.skus);
+        weightedPrices = calculateTimeWeightedPrices(timePhaseData, ctx);
       }
 
       // Calculate pricing for each item
@@ -622,9 +939,8 @@ serve(async (req) => {
 
       for (const item of allItems) {
         const packageTerm = packageTerms.get(item.package_id) || 12;
-        const aggQty = aggregatedQtys?.get(item.sku_id);
 
-        const result = calculateItemPricing(ctx, item, packageTerm, aggQty);
+        const result = calculateItemPricingWithPhases(ctx, item, packageTerm, weightedPrices);
         results.push(result);
 
         quoteTotalMonthly += result.monthly_total;
