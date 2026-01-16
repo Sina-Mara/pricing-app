@@ -5,6 +5,9 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/**
+ * Format currency value
+ */
 export function formatCurrency(value: number): string {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -14,6 +17,9 @@ export function formatCurrency(value: number): string {
   }).format(value)
 }
 
+/**
+ * Format number with specified decimal places
+ */
 export function formatNumber(value: number, decimals = 2): string {
   return new Intl.NumberFormat('en-US', {
     minimumFractionDigits: decimals,
@@ -21,10 +27,16 @@ export function formatNumber(value: number, decimals = 2): string {
   }).format(value)
 }
 
+/**
+ * Format percentage
+ */
 export function formatPercent(value: number): string {
   return `${value.toFixed(1)}%`
 }
 
+/**
+ * Format date
+ */
 export function formatDate(date: string | Date): string {
   return new Intl.DateTimeFormat('en-US', {
     year: 'numeric',

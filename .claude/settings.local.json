@@ -8,7 +8,12 @@
       "Bash(git commit:*)",
       "Bash(npm install)",
       "Bash(npm run build:*)",
-      "Bash(npm run test:run:*)"
+      "Bash(npm run test:run:*)",
+      "Bash(npm install:*)",
+      "Bash(npx playwright install chromium)",
+      "Bash(npm run test:e2e:*)",
+      "Bash(tree:*)",
+      "Bash(gh auth status:*)"
     ]
   }
 }
