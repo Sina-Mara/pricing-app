@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom'
 import { cn } from '@/lib/utils'
+import { useState } from 'react'
 import {
   LayoutDashboard,
   FileText,
@@ -9,6 +10,12 @@ import {
   LogOut,
   Calculator,
   TrendingUp,
+  ChevronDown,
+  ChevronRight,
+  Sliders,
+  Calendar,
+  Server,
+  DollarSign,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -23,6 +30,13 @@ const navigation = [
   { name: 'Forecast', href: '/forecast', icon: TrendingUp },
 ]
 
+const adminNavigation = [
+  { name: 'Pricing Models', href: '/admin/pricing-models', icon: Sliders },
+  { name: 'Term Factors', href: '/admin/term-factors', icon: Calendar },
+  { name: 'Environment Factors', href: '/admin/environment-factors', icon: Server },
+  { name: 'Base Charges', href: '/admin/base-charges', icon: DollarSign },
+]
+
 const bottomNavigation = [
   { name: 'Settings', href: '/settings', icon: Settings },
 ]
@@ -30,6 +44,9 @@ const bottomNavigation = [
 export function Sidebar() {
   const location = useLocation()
   const { signOut, user } = useAuth()
+  const [adminExpanded, setAdminExpanded] = useState(
+    location.pathname.startsWith('/admin')
+  )
 
   return (
     <div className="flex h-full w-64 flex-col border-r bg-card">
@@ -62,6 +79,52 @@ export function Sidebar() {
             </Link>
           )
         })}
+
+        {/* Admin Section */}
+        <div className="pt-4">
+          <button
+            onClick={() => setAdminExpanded(!adminExpanded)}
+            className={cn(
+              'flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+              location.pathname.startsWith('/admin')
+                ? 'text-foreground'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            )}
+          >
+            <div className="flex items-center space-x-3">
+              <Settings className="h-5 w-5" />
+              <span>Admin</span>
+            </div>
+            {adminExpanded ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
+          </button>
+
+          {adminExpanded && (
+            <div className="ml-4 mt-1 space-y-1">
+              {adminNavigation.map((item) => {
+                const isActive = location.pathname === item.href
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    className={cn(
+                      'flex items-center space-x-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                      isActive
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                    )}
+                  >
+                    <item.icon className="h-4 w-4" />
+                    <span>{item.name}</span>
+                  </Link>
+                )
+              })}
+            </div>
+          )}
+        </div>
       </nav>
 
       {/* Bottom Section */}

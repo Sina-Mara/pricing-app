@@ -16,6 +16,12 @@ import Calculator from '@/pages/Calculator'
 import ForecastEvaluator from '@/pages/ForecastEvaluator'
 import Settings from '@/pages/Settings'
 
+// Admin Pages
+import PricingModels from '@/pages/admin/PricingModels'
+import TermFactors from '@/pages/admin/TermFactors'
+import EnvironmentFactors from '@/pages/admin/EnvironmentFactors'
+import BaseCharges from '@/pages/admin/BaseCharges'
+
 export default function App() {
   return (
     <AuthProvider>
@@ -41,6 +47,12 @@ export default function App() {
           <Route path="/calculator" element={<Calculator />} />
           <Route path="/forecast" element={<ForecastEvaluator />} />
           <Route path="/settings" element={<Settings />} />
+
+          {/* Admin Routes */}
+          <Route path="/admin/pricing-models" element={<PricingModels />} />
+          <Route path="/admin/term-factors" element={<TermFactors />} />
+          <Route path="/admin/environment-factors" element={<EnvironmentFactors />} />
+          <Route path="/admin/base-charges" element={<BaseCharges />} />
         </Route>
       </Routes>
       <Toaster />
