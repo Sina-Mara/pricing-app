@@ -21,6 +21,7 @@ import PricingModels from '@/pages/admin/PricingModels'
 import TermFactors from '@/pages/admin/TermFactors'
 import EnvironmentFactors from '@/pages/admin/EnvironmentFactors'
 import BaseCharges from '@/pages/admin/BaseCharges'
+import PerpetualConfig from '@/pages/admin/PerpetualConfig'
 
 export default function App() {
   return (
@@ -53,6 +54,7 @@ export default function App() {
           <Route path="/admin/term-factors" element={<TermFactors />} />
           <Route path="/admin/environment-factors" element={<EnvironmentFactors />} />
           <Route path="/admin/base-charges" element={<BaseCharges />} />
+          <Route path="/admin/perpetual-config" element={<PerpetualConfig />} />
         </Route>
       </Routes>
       <Toaster />

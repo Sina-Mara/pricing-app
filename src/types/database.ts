@@ -201,3 +201,32 @@ export interface CalculatePricingResponse {
   items?: PricingResult[]
   error?: string
 }
+
+// Perpetual licensing types
+export interface PerpetualConfig {
+  id: string
+  parameter: string
+  value: number
+  description: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface PerpetualPricingResult {
+  perpetual_license: number
+  annual_maintenance: number
+  total_maintenance: number
+  upgrade_protection: number
+  total_perpetual: number
+}
+
+export interface QuoteWithPerpetual extends Quote {
+  include_perpetual_pricing: boolean
+  perpetual_total: number | null
+}
+
+export interface QuoteItemWithPerpetual extends QuoteItem {
+  perpetual_license: number | null
+  perpetual_maintenance: number | null
+  perpetual_total: number | null
+}

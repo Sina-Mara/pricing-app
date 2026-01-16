@@ -16,6 +16,7 @@ import {
   Calendar,
   Server,
   DollarSign,
+  FileStack,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -35,6 +36,7 @@ const adminNavigation = [
   { name: 'Term Factors', href: '/admin/term-factors', icon: Calendar },
   { name: 'Environment Factors', href: '/admin/environment-factors', icon: Server },
   { name: 'Base Charges', href: '/admin/base-charges', icon: DollarSign },
+  { name: 'Perpetual Config', href: '/admin/perpetual-config', icon: FileStack },
 ]
 
 const bottomNavigation = [

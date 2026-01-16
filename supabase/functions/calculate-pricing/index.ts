@@ -128,6 +128,25 @@ interface QuotePackage {
   quote_items: QuoteItem[];
 }
 
+interface PerpetualConfig {
+  compensation_term_months: number;
+  maintenance_reduction_factor: number;
+  maintenance_term_years: number;
+  upgrade_protection_percent: number;
+  maintenance_percent_cas: number;
+  maintenance_percent_cno: number;
+  maintenance_percent_default: number;
+  exclude_cno_from_perpetual: boolean;
+}
+
+interface PerpetualPricingResult {
+  perpetual_license: number;
+  annual_maintenance: number;
+  total_maintenance: number;
+  upgrade_protection: number;
+  total_perpetual: number;
+}
+
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
@@ -767,6 +786,105 @@ function calculateItemPricingWithPhases(
   result.annual_total = round2(result.monthly_total * 12);
 
   return result;
+}
+
+// ============================================================================
+// PERPETUAL PRICING CALCULATION
+// ============================================================================
+
+/**
+ * Load perpetual config from database
+ */
+async function loadPerpetualConfig(supabase: any): Promise<PerpetualConfig> {
+  const { data } = await supabase.from('perpetual_config').select('*');
+
+  const config: PerpetualConfig = {
+    compensation_term_months: 48,
+    maintenance_reduction_factor: 0.7,
+    maintenance_term_years: 3,
+    upgrade_protection_percent: 15,
+    maintenance_percent_cas: 27,
+    maintenance_percent_cno: 19,
+    maintenance_percent_default: 20,
+    exclude_cno_from_perpetual: true,
+  };
+
+  for (const row of data || []) {
+    const param = row.parameter.toLowerCase().replace(/_/g, '_');
+    switch (param) {
+      case 'compensation_term_months':
+        config.compensation_term_months = row.value;
+        break;
+      case 'maintenance_reduction_factor':
+        config.maintenance_reduction_factor = row.value;
+        break;
+      case 'maintenance_term_years':
+        config.maintenance_term_years = row.value;
+        break;
+      case 'upgrade_protection_percent':
+        config.upgrade_protection_percent = row.value;
+        break;
+      case 'maintenance_percent_cas':
+        config.maintenance_percent_cas = row.value;
+        break;
+      case 'maintenance_percent_cno':
+        config.maintenance_percent_cno = row.value;
+        break;
+      case 'maintenance_percent_default':
+        config.maintenance_percent_default = row.value;
+        break;
+      case 'exclude_cno_from_perpetual':
+        config.exclude_cno_from_perpetual = row.value > 0;
+        break;
+    }
+  }
+
+  return config;
+}
+
+/**
+ * Calculate perpetual pricing for a subscription price
+ */
+function calculatePerpetualPricing(
+  monthlyPrice: number,
+  qty: number,
+  category: string,
+  config: PerpetualConfig
+): PerpetualPricingResult {
+  // Extract license-only price from subscription (which includes maintenance/support)
+  const licenseOnlyPrice = monthlyPrice * config.maintenance_reduction_factor;
+
+  // Base perpetual license = license-only price * compensation term * quantity
+  const perpetualLicense = licenseOnlyPrice * qty * config.compensation_term_months;
+
+  // Determine maintenance percentage based on category
+  let maintenancePercent = config.maintenance_percent_default;
+  const cat = (category || '').toLowerCase();
+  if (cat.includes('cas')) {
+    maintenancePercent = config.maintenance_percent_cas;
+  } else if (cat.includes('cno')) {
+    maintenancePercent = config.maintenance_percent_cno;
+  }
+
+  // Annual maintenance = perpetual license * maintenance percentage
+  const annualMaintenance = perpetualLicense * (maintenancePercent / 100);
+
+  // Total maintenance for the term
+  const totalMaintenance = annualMaintenance * config.maintenance_term_years;
+
+  // Upgrade protection
+  const upgradeProtection = perpetualLicense * (config.upgrade_protection_percent / 100);
+
+  // Total perpetual cost
+  const totalPerpetual = perpetualLicense + totalMaintenance + upgradeProtection;
+
+  return {
+    perpetual_license: round2(perpetualLicense),
+    annual_maintenance: round2(annualMaintenance),
+    total_maintenance: round2(totalMaintenance),
+    upgrade_protection: round2(upgradeProtection),
+    total_perpetual: round2(totalPerpetual),
+  };
 }
 
 // ============================================================================
