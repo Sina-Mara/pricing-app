@@ -15,6 +15,7 @@ import Customers from '@/pages/Customers'
 import Calculator from '@/pages/Calculator'
 import ForecastEvaluator from '@/pages/ForecastEvaluator'
 import Settings from '@/pages/Settings'
+import Timeline from '@/pages/Timeline'
 
 // Admin Pages
 import PricingModels from '@/pages/admin/PricingModels'
@@ -43,6 +44,7 @@ export default function App() {
           <Route path="/quotes" element={<Quotes />} />
           <Route path="/quotes/new" element={<QuoteBuilder />} />
           <Route path="/quotes/:id" element={<QuoteBuilder />} />
+          <Route path="/quotes/:id/timeline" element={<Timeline />} />
           <Route path="/skus" element={<SKUs />} />
           <Route path="/customers" element={<Customers />} />
           <Route path="/calculator" element={<Calculator />} />
