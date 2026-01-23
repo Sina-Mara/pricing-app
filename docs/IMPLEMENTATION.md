@@ -99,6 +99,8 @@ pricing-app/
 │   │
 │   ├── lib/
 │   │   ├── pricing.ts             # Pricing calculation algorithms
+│   │   ├── excel-parser.ts        # Excel file parsing for time-series
+│   │   ├── timeseries-pricing.ts  # Time-series pricing engine
 │   │   ├── supabase.ts            # Supabase client & helpers
 │   │   ├── pdf.ts                 # PDF generation (jsPDF)
 │   │   └── utils.ts               # Formatting utilities
@@ -114,6 +116,7 @@ pricing-app/
 │       ├── Customers.tsx          # Customer management
 │       ├── SKUs.tsx               # Product catalog
 │       ├── ForecastEvaluator.tsx  # License forecasting
+│       ├── TimeSeriesForecast.tsx # Time-series import & pricing
 │       ├── Timeline.tsx           # Quote history
 │       ├── Settings.tsx           # User settings
 │       ├── Login.tsx              # Authentication
@@ -123,13 +126,16 @@ pricing-app/
 │           ├── TermFactors.tsx        # Commitment discounts
 │           ├── EnvironmentFactors.tsx # Env multipliers
 │           ├── BaseCharges.tsx        # Fixed fees
-│           └── PerpetualConfig.tsx    # Perpetual licensing
+│           ├── PerpetualConfig.tsx    # Perpetual licensing
+│           └── ForecastMapping.tsx    # KPI to SKU mappings
 │
 ├── supabase/
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql     # Database schema
 │   │   ├── 002_seed_data.sql          # Sample data
-│   │   └── 003_perpetual_extensions.sql
+│   │   ├── 003_perpetual_extensions.sql
+│   │   ├── 004_forecast_scenarios.sql # Forecast & versioning
+│   │   └── 005_timeseries_forecasts.sql # Time-series tables
 │   └── functions/
 │       └── calculate-pricing/
 │           └── index.ts               # Edge function
@@ -139,7 +145,9 @@ pricing-app/
 │   ├── pricing/                   # Unit tests
 │   │   ├── volume-pricing.test.ts
 │   │   ├── term-factors.test.ts
-│   │   └── time-phased-aggregation.test.ts
+│   │   ├── time-phased-aggregation.test.ts
+│   │   ├── excel-parser.test.ts       # Excel parsing tests (23)
+│   │   └── timeseries-pricing.test.ts # Time-series pricing tests (25)
 │   └── e2e/                       # Playwright tests
 │       ├── auth.spec.ts
 │       ├── quote-creation.spec.ts
@@ -802,6 +810,7 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     <Route path="/customers" element={<Customers />} />
     <Route path="/calculator" element={<Calculator />} />
     <Route path="/forecast" element={<ForecastEvaluator />} />
+    <Route path="/forecast/timeseries" element={<TimeSeriesForecast />} />
     <Route path="/settings" element={<Settings />} />
 
     {/* Admin Routes */}
@@ -810,6 +819,7 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     <Route path="/admin/environment-factors" element={<EnvironmentFactors />} />
     <Route path="/admin/base-charges" element={<BaseCharges />} />
     <Route path="/admin/perpetual-config" element={<PerpetualConfig />} />
+    <Route path="/admin/forecast-mapping" element={<ForecastMapping />} />
   </Route>
 </Routes>
 ```
@@ -823,14 +833,16 @@ Main Navigation
 ├── SKUs (/skus)
 ├── Customers (/customers)
 ├── Calculator (/calculator)
-└── Forecast (/forecast)
+├── Forecast (/forecast)
+└── Time-Series (/forecast/timeseries)
 
 Admin Section (collapsible)
 ├── Pricing Models (/admin/pricing-models)
 ├── Term Factors (/admin/term-factors)
 ├── Environment Factors (/admin/environment-factors)
 ├── Base Charges (/admin/base-charges)
-└── Perpetual Config (/admin/perpetual-config)
+├── Perpetual Config (/admin/perpetual-config)
+└── Forecast Mapping (/admin/forecast-mapping)
 
 Bottom Section
 ├── Settings (/settings)
@@ -852,6 +864,8 @@ Bottom Section
 | `volume-pricing.test.ts` | 22 | Stepped, smooth, manual modes |
 | `term-factors.test.ts` | 15 | Interpolation, extrapolation, caps |
 | `time-phased-aggregation.test.ts` | 10 | Phase calculation, weighting |
+| `excel-parser.test.ts` | 23 | Date formats, KPI parsing, validation |
+| `timeseries-pricing.test.ts` | 25 | Period forecasts, commitment strategies |
 
 **Running Tests:**
 

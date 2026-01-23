@@ -18,6 +18,7 @@ The Pricing App is an enterprise-grade pricing engine and quote management syste
 | SKU Catalog | Product catalog with pricing info | Complete |
 | Timeline Visualization | Contract lifecycle Gantt view | Complete |
 | Forecast Evaluator | License requirement calculator | Complete |
+| Time-Series Forecast | Excel import with pay-per-use & fixed commitment pricing | Complete |
 
 ## 2. Admin Features
 
@@ -28,6 +29,7 @@ The Pricing App is an enterprise-grade pricing engine and quote management syste
 | Base Charges | Fixed monthly recurring fees | Complete |
 | Environment Factors | Production vs Reference pricing | Complete |
 | Perpetual Config | Perpetual licensing parameters | Complete |
+| Forecast Mapping | KPI to SKU mapping for forecast-to-quote | Complete |
 
 ## 3. Pricing Engine Capabilities
 
@@ -40,6 +42,7 @@ The Pricing App is an enterprise-grade pricing engine and quote management syste
 | Aggregated Pricing | Cross-package quantity aggregation |
 | Time-Phased Aggregation | Weighted pricing across contract phases |
 | Perpetual Alternative | License + maintenance calculation |
+| Time-Series Pricing | Pay-per-use (monthly) or fixed commitment (peak/avg/percentile) |
 
 ## 4. Data Model Summary
 
@@ -57,6 +60,11 @@ The Pricing App is an enterprise-grade pricing engine and quote management syste
 - `base_charges` - Fixed monthly fees
 - `env_factors` / `default_env_factors` - Environment multipliers
 - `perpetual_config` - Perpetual licensing parameters
+- `forecast_sku_mappings` - KPI to SKU mappings for forecasting
+
+### Time-Series Tables
+- `timeseries_forecasts` - Forecast containers with config
+- `timeseries_forecast_data` - Per-period data points
 
 ## 5. Technical Stack
 

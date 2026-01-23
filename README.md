@@ -13,6 +13,7 @@ An enterprise-grade pricing engine and quote management system for B2B SaaS lice
 - **SKU Catalog** - Product catalog with pricing model information
 - **Timeline Visualization** - Contract lifecycle Gantt view
 - **Forecast Evaluator** - License requirement calculator
+- **Time-Series Forecast** - Excel import with multi-period pricing (pay-per-use or fixed commitment)
 
 ### Admin Configuration
 - **Pricing Models** - Configure algorithmic pricing (stepped, smooth, manual modes)
@@ -20,6 +21,7 @@ An enterprise-grade pricing engine and quote management system for B2B SaaS lice
 - **Base Charges** - Manage fixed monthly recurring fees
 - **Environment Factors** - Configure production vs reference pricing multipliers
 - **Perpetual Config** - Set perpetual licensing parameters
+- **Forecast Mapping** - Map forecast KPIs to SKUs for quote generation
 
 ### Pricing Engine Capabilities
 | Capability | Description |
@@ -31,6 +33,7 @@ An enterprise-grade pricing engine and quote management system for B2B SaaS lice
 | Aggregated Pricing | Cross-package quantity aggregation |
 | Time-Phased Aggregation | Weighted pricing across contract phases |
 | Perpetual Alternative | License + maintenance calculation |
+| Time-Series Pricing | Pay-per-use (monthly) or fixed commitment (peak/avg/P90/P95) |
 
 ## Tech Stack
 
@@ -107,21 +110,26 @@ pricing-app/
 ├── src/
 │   ├── components/       # React components
 │   │   ├── ui/          # Radix UI primitives
-│   │   └── layout/      # Layout components
+│   │   ├── layout/      # Layout components
+│   │   ├── ExcelUploader.tsx      # Drag-drop file upload
+│   │   └── TimeseriesChart.tsx    # Time-series visualizations
 │   ├── contexts/        # React contexts (Auth)
 │   ├── hooks/           # Custom hooks
 │   ├── lib/             # Utilities & business logic
-│   │   ├── pricing.ts   # Pricing algorithms
-│   │   ├── supabase.ts  # Supabase client
-│   │   └── utils.ts     # Formatting helpers
+│   │   ├── pricing.ts            # Pricing algorithms
+│   │   ├── excel-parser.ts       # Excel file parsing
+│   │   ├── timeseries-pricing.ts # Time-series pricing engine
+│   │   ├── supabase.ts           # Supabase client
+│   │   └── utils.ts              # Formatting helpers
 │   ├── pages/           # Page components
+│   │   ├── TimeSeriesForecast.tsx # Time-series import page
 │   │   └── admin/       # Admin pages
 │   └── types/           # TypeScript definitions
 ├── supabase/
-│   ├── migrations/      # Database schema
+│   ├── migrations/      # Database schema (5 migrations)
 │   └── functions/       # Edge functions
 ├── tests/
-│   ├── pricing/         # Unit tests
+│   ├── pricing/         # Unit tests (95 tests)
 │   └── e2e/             # Playwright tests
 └── docs/                # Documentation
 ```
@@ -134,7 +142,7 @@ pricing-app/
 ## Testing
 
 ### Unit Tests
-The pricing algorithms are thoroughly tested with 47+ test cases:
+The pricing algorithms are thoroughly tested with 95 test cases:
 
 ```bash
 npm run test:run
@@ -163,6 +171,11 @@ npm run test:e2e
 - `base_charges` - Fixed monthly fees
 - `env_factors` - Environment multipliers
 - `perpetual_config` - Perpetual licensing parameters
+- `forecast_sku_mappings` - KPI to SKU mappings for forecasting
+
+### Time-Series Tables
+- `timeseries_forecasts` - Forecast containers with configuration
+- `timeseries_forecast_data` - Per-period data points (SIMs, GB/SIM, calculated KPIs)
 
 ## Pricing Algorithm
 

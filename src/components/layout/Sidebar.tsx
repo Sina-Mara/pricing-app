@@ -17,6 +17,8 @@ import {
   Server,
   DollarSign,
   FileStack,
+  Map,
+  LineChart,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -29,6 +31,7 @@ const navigation = [
   { name: 'Customers', href: '/customers', icon: Users },
   { name: 'Calculator', href: '/calculator', icon: Calculator },
   { name: 'Forecast', href: '/forecast', icon: TrendingUp },
+  { name: 'Time-Series', href: '/forecast/timeseries', icon: LineChart },
 ]
 
 const adminNavigation = [
@@ -37,6 +40,7 @@ const adminNavigation = [
   { name: 'Environment Factors', href: '/admin/environment-factors', icon: Server },
   { name: 'Base Charges', href: '/admin/base-charges', icon: DollarSign },
   { name: 'Perpetual Config', href: '/admin/perpetual-config', icon: FileStack },
+  { name: 'Forecast Mapping', href: '/admin/forecast-mapping', icon: Map },
 ]
 
 const bottomNavigation = [
