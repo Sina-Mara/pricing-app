@@ -288,3 +288,202 @@ export function CommitmentStrategyPicker({
 }
 
 export default CommitmentStrategyPicker
+
+// =============================================================================
+// CommitmentMode type
+// =============================================================================
+
+export type CommitmentMode = 'max' | 'yearly'
+
+// =============================================================================
+// Helper: Group scenarios by year
+// =============================================================================
+
+function groupScenariosByYear(scenarios: ForecastScenario[]): Map<number | string, ForecastScenario[]> {
+  const grouped = new Map<number | string, ForecastScenario[]>()
+  let fallbackIndex = 1
+
+  for (const scenario of scenarios) {
+    // Use last match to skip year ranges like "2027-2031" in prefix
+    const allMatches = [...scenario.name.matchAll(/\b(20\d{2})\b/g)]
+    const match = allMatches.length > 0 ? allMatches[allMatches.length - 1] : null
+    const key = match ? parseInt(match[1]) : `Period ${fallbackIndex++}`
+    const existing = grouped.get(key) || []
+    existing.push(scenario)
+    grouped.set(key, existing)
+  }
+
+  // Sort by key (numbers first, then strings)
+  const sorted = new Map(
+    [...grouped.entries()].sort((a, b) => {
+      if (typeof a[0] === 'number' && typeof b[0] === 'number') return a[0] - b[0]
+      if (typeof a[0] === 'number') return -1
+      if (typeof b[0] === 'number') return 1
+      return String(a[0]).localeCompare(String(b[0]))
+    })
+  )
+
+  return sorted
+}
+
+// =============================================================================
+// PerPeriodPreview Component
+// =============================================================================
+
+interface PerPeriodPreviewProps {
+  /** Forecast scenarios to display grouped by year */
+  scenarios: ForecastScenario[]
+  /** Additional CSS class */
+  className?: string
+}
+
+/**
+ * Read-only informational display for yearly commitment mode.
+ * Shows a per-year breakdown table of forecast values and a summary
+ * of how many packages will be created.
+ */
+export function PerPeriodPreview({ scenarios, className = '' }: PerPeriodPreviewProps) {
+  const yearGroups = groupScenariosByYear(scenarios)
+  const yearCount = yearGroups.size
+
+  if (scenarios.length === 0) {
+    return null
+  }
+
+  // For each year group, pick representative values.
+  // If multiple scenarios share a year, use the first one (or aggregate).
+  const yearRows = Array.from(yearGroups.entries()).map(([year, yearScenarios]) => {
+    // Aggregate within a year: take max values when multiple scenarios share a year
+    const sims = Math.max(...yearScenarios.map(s => s.total_sims || 0))
+    const gbPerSim = Math.max(...yearScenarios.map(s => s.gb_per_sim || 0))
+    const udr = Math.max(...yearScenarios.map(s => s.output_udr || 0))
+    const pcs = Math.max(...yearScenarios.map(s => s.output_pcs || 0))
+
+    return { year, sims, gbPerSim, udr, pcs }
+  })
+
+  return (
+    <Card className={className}>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Calendar className="h-5 w-5 text-blue-500" />
+          Yearly Commitment Breakdown
+        </CardTitle>
+        <CardDescription>
+          Each year will generate a separate package with a 12-month commitment term
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Year</TableHead>
+              <TableHead className="text-right">SIMs</TableHead>
+              <TableHead className="text-right">GB/SIM</TableHead>
+              <TableHead className="text-right">UDR</TableHead>
+              <TableHead className="text-right">PCS</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {yearRows.map((row) => (
+              <TableRow key={String(row.year)}>
+                <TableCell className="font-medium">{row.year}</TableCell>
+                <TableCell className="text-right font-mono">{formatNumber(row.sims)}</TableCell>
+                <TableCell className="text-right font-mono">{row.gbPerSim.toFixed(2)}</TableCell>
+                <TableCell className="text-right font-mono">{formatNumber(row.udr)}</TableCell>
+                <TableCell className="text-right font-mono">{formatNumber(row.pcs)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+
+        <div className="p-3 bg-muted/50 rounded-lg text-sm">
+          <div className="flex items-start gap-2">
+            <Info className="h-4 w-4 mt-0.5 text-muted-foreground" />
+            <p className="text-muted-foreground">
+              <span className="font-medium text-foreground">{yearCount} package{yearCount !== 1 ? 's' : ''}</span>{' '}
+              will be created, each with a 12-month commitment term.
+            </p>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// =============================================================================
+// CommitmentModeSelector Component
+// =============================================================================
+
+interface CommitmentModeSelectorProps {
+  /** Currently selected commitment mode */
+  value: CommitmentMode
+  /** Callback when mode changes */
+  onChange: (mode: CommitmentMode) => void
+  /** Number of years in the forecast (for display) */
+  yearCount: number
+  /** Additional CSS class */
+  className?: string
+}
+
+/**
+ * Radio group for selecting between max commitment and yearly commitment modes.
+ * Only rendered when multiple scenarios are present.
+ */
+export function CommitmentModeSelector({
+  value,
+  onChange,
+  yearCount,
+  className = '',
+}: CommitmentModeSelectorProps) {
+  return (
+    <Card className={className}>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Info className="h-5 w-5 text-primary" />
+          Commitment Mode
+        </CardTitle>
+        <CardDescription>
+          Choose how to structure commitment packages for your {yearCount}-year forecast
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <RadioGroup
+          value={value}
+          onValueChange={(v: string) => onChange(v as CommitmentMode)}
+          className="space-y-3"
+        >
+          {/* Max Commitment */}
+          <div className="flex items-start space-x-3">
+            <RadioGroupItem value="max" id="mode-max" className="mt-1" />
+            <Label htmlFor="mode-max" className="flex-1 cursor-pointer">
+              <div className="flex items-center gap-2">
+                <span className="font-medium">Max commitment</span>
+                <Badge variant="outline" className="text-xs">Default</Badge>
+              </div>
+              <p className="text-sm text-muted-foreground mt-1">
+                Single package committed to the peak forecast value across all years. Full contract term applied.
+              </p>
+            </Label>
+          </div>
+
+          {/* Yearly Commitment */}
+          <div className="flex items-start space-x-3">
+            <RadioGroupItem value="yearly" id="mode-yearly" className="mt-1" />
+            <Label htmlFor="mode-yearly" className="flex-1 cursor-pointer">
+              <div className="flex items-center gap-2">
+                <span className="font-medium">Yearly commitment</span>
+                <Badge variant="secondary" className="text-xs">
+                  {yearCount} package{yearCount !== 1 ? 's' : ''}
+                </Badge>
+              </div>
+              <p className="text-sm text-muted-foreground mt-1">
+                Separate package per year, each sized to that year's forecast. 12-month term per package.
+              </p>
+            </Label>
+          </div>
+        </RadioGroup>
+      </CardContent>
+    </Card>
+  )
+}

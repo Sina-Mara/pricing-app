@@ -71,14 +71,18 @@ import type {
 } from '@/types/database'
 import { generateQuotePDF } from '@/lib/pdf'
 import { QuickQuantityInput } from '@/components/QuickQuantityInput'
-import { CommitmentStrategyPicker } from '@/components/CommitmentStrategyPicker'
+import { CommitmentStrategyPicker, CommitmentModeSelector, PerPeriodPreview } from '@/components/CommitmentStrategyPicker'
+import type { CommitmentMode } from '@/components/CommitmentStrategyPicker'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
   type CommitmentSizingStrategy,
-  generateCommitmentQuote,
+  type ManualSkuItem,
+  generateMultiModeCommitmentQuote,
+  generatePerPeriodPayPerUseQuote,
   getTermTierLabel,
   extractYearsFromScenarios,
 } from '@/lib/quote-generator'
+import { ManualSkuInput } from '@/components/ManualSkuInput'
 import { AlertTriangle, Settings2 } from 'lucide-react'
 
 const statusOptions: QuoteStatus[] = ['draft', 'pending', 'sent', 'accepted', 'rejected', 'expired', 'ordered']
@@ -138,6 +142,10 @@ export default function QuoteBuilder() {
   const [commitmentStrategy, setCommitmentStrategy] = useState<CommitmentSizingStrategy>('peak')
   const [specificYear, setSpecificYear] = useState<number | undefined>(undefined)
   const [selectedTermMonths, setSelectedTermMonths] = useState(DEFAULT_COMMITMENT_TERM)
+  const [commitmentMode, setCommitmentMode] = useState<CommitmentMode>('max')
+
+  // Manual SKU quantities for unmapped infrastructure SKUs
+  const [manualSkuItems, setManualSkuItems] = useState<ManualSkuItem[]>([])
 
   // Check if we have multiple scenarios
   const hasMultipleScenarios = (locationState?.scenarioIds?.length || 0) > 1
@@ -302,21 +310,60 @@ export default function QuoteBuilder() {
   // Create new quote
   const createQuote = useMutation({
     mutationFn: async () => {
-      // For multi-scenario commitment quotes, use the generateCommitmentQuote function
+      // For multi-scenario commitment quotes, use the generateMultiModeCommitmentQuote function
+      console.log('[QuoteBuilder] createQuote called:', {
+        hasMultipleScenarios,
+        quoteType: formData.quote_type,
+        scenariosLength: scenarios.length,
+        commitmentMode,
+        commitmentStrategy,
+        selectedTermMonths,
+      })
+      // Filter manual items to those with qty > 0
+      const activeManualItems = manualSkuItems.filter(
+        i => i.quantity > 0 || Object.values(i.perYearQuantities ?? {}).some(q => q > 0)
+      )
+
       if (hasMultipleScenarios && formData.quote_type === 'commitment' && scenarios.length > 0) {
-        const result = await generateCommitmentQuote({
+        console.log('[QuoteBuilder] Entering multi-scenario commitment path with mode:', commitmentMode)
+        const result = await generateMultiModeCommitmentQuote({
           scenarios,
           customerId: formData.customer_id || undefined,
-          termMonths: selectedTermMonths,
+          commitmentMode,
           strategy: commitmentStrategy,
-          specificYear: commitmentStrategy === 'specific_year' ? specificYear : undefined,
+          termMonths: selectedTermMonths,
           title: formData.title || undefined,
           notes: formData.notes || undefined,
+          manualItems: activeManualItems.length > 0 ? activeManualItems : undefined,
         })
-        return { id: result.quoteId, quote_number: result.quoteNumber }
+        return {
+          id: result.quoteId,
+          quote_number: result.quoteNumber,
+          _multiScenario: true as const,
+          _packageCount: result.packageCount,
+          _quoteType: 'commitment' as const,
+        }
       }
 
-      // Standard quote creation for single scenario or pay-per-use
+      // For multi-scenario pay-per-use quotes, use generatePerPeriodPayPerUseQuote
+      if (hasMultipleScenarios && formData.quote_type === 'pay_per_use' && scenarios.length > 0) {
+        const result = await generatePerPeriodPayPerUseQuote(
+          scenarios,
+          formData.customer_id || undefined,
+          formData.title || undefined,
+          formData.notes || undefined,
+          activeManualItems.length > 0 ? activeManualItems : undefined,
+        )
+        return {
+          id: result.quoteId,
+          quote_number: result.quoteNumber,
+          _multiScenario: true as const,
+          _packageCount: result.packageCount,
+          _quoteType: 'pay_per_use' as const,
+        }
+      }
+
+      // Standard quote creation for single scenario or non-forecast quotes
       const versionGroupId = crypto.randomUUID()
       // For pay-per-use quotes, default to non-aggregated pricing (each period priced independently)
       const useAggregatedPricing = formData.quote_type === 'pay_per_use'
@@ -342,13 +389,23 @@ export default function QuoteBuilder() {
       if (error) throw error
       return data
     },
-    onSuccess: async (data) => {
-      // For multi-scenario commitment quotes, the quote is already fully created
-      if (hasMultipleScenarios && formData.quote_type === 'commitment' && scenarios.length > 0) {
-        toast({
-          title: 'Commitment quote created',
-          description: `Quote created using ${commitmentStrategy} strategy with ${selectedTermMonths}-month term.`,
-        })
+    onSuccess: async (data: any) => {
+      // For multi-scenario quotes, the quote is already fully created
+      if (data._multiScenario) {
+        const pkgCount = data._packageCount as number
+        if (data._quoteType === 'commitment') {
+          toast({
+            title: 'Commitment quote created',
+            description: pkgCount === 1
+              ? `Created quote with 1 package using ${commitmentStrategy} strategy with ${selectedTermMonths}-month term.`
+              : `Created quote with ${pkgCount} yearly packages, each with a 12-month term.`,
+          })
+        } else {
+          toast({
+            title: 'Pay-per-use quote created',
+            description: `Created quote with ${pkgCount} monthly package${pkgCount !== 1 ? 's' : ''}.`,
+          })
+        }
         navigate(`/quotes/${data.id}`, { replace: true })
         return
       }
@@ -1067,76 +1124,114 @@ export default function QuoteBuilder() {
           </Alert>
         )}
 
-        {/* Commitment Strategy Picker (for new quotes with multiple scenarios) */}
+        {/* Commitment Configuration (for new quotes with multiple scenarios) */}
         {isNew && fromForecast && hasMultipleScenarios && formData.quote_type === 'commitment' && scenarios.length > 1 && (
-          <div className="grid gap-6 md:grid-cols-2">
-            {/* Strategy Picker */}
-            <CommitmentStrategyPicker
-              scenarios={scenarios}
-              strategy={commitmentStrategy}
-              onStrategyChange={setCommitmentStrategy}
-              specificYear={specificYear}
-              onSpecificYearChange={setSpecificYear}
-              showPreview={true}
+          <div className="space-y-6 mb-6">
+            {/* Commitment Mode Selector */}
+            <CommitmentModeSelector
+              value={commitmentMode}
+              onChange={(mode) => {
+                console.log('[QuoteBuilder] CommitmentMode changed to:', mode)
+                setCommitmentMode(mode)
+              }}
+              yearCount={availableYears.length || scenarios.length}
             />
 
-            {/* Term Selector Card */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Lock className="h-5 w-5 text-blue-500" />
-                  Commitment Term
-                </CardTitle>
-                <CardDescription>
-                  Select the contract term length for volume and term discounts
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                {/* Term Selection */}
-                <div className="space-y-3">
-                  <Label>Term Length</Label>
-                  <Select
-                    value={selectedTermMonths.toString()}
-                    onValueChange={(v) => setSelectedTermMonths(parseInt(v))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {termOptions.filter(t => t > 1).map((term) => (
-                        <SelectItem key={term} value={term.toString()}>
-                          <div className="flex items-center justify-between w-full gap-4">
-                            <span>{term} months</span>
-                            <span className="text-xs text-muted-foreground">
-                              ({Math.floor(term / 12)} year{Math.floor(term / 12) !== 1 ? 's' : ''})
-                            </span>
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+            {/* Max mode: show strategy picker and term selector */}
+            {commitmentMode === 'max' && (
+              <div className="grid gap-6 md:grid-cols-2">
+                {/* Strategy Picker */}
+                <CommitmentStrategyPicker
+                  scenarios={scenarios}
+                  strategy={commitmentStrategy}
+                  onStrategyChange={setCommitmentStrategy}
+                  specificYear={specificYear}
+                  onSpecificYearChange={setSpecificYear}
+                  showPreview={true}
+                />
 
-                {/* Term Tier Info */}
-                <div className="rounded-lg bg-blue-50 border border-blue-200 p-4">
-                  <div className="text-sm font-medium text-blue-800">
-                    {getTermTierLabel(selectedTermMonths)}
-                  </div>
-                  <p className="text-sm text-blue-600 mt-1">
-                    Longer commitments typically qualify for higher term discounts.
+                {/* Term Selector Card */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Lock className="h-5 w-5 text-blue-500" />
+                      Commitment Term
+                    </CardTitle>
+                    <CardDescription>
+                      Select the contract term length for volume and term discounts
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    {/* Term Selection */}
+                    <div className="space-y-3">
+                      <Label>Term Length</Label>
+                      <Select
+                        value={selectedTermMonths.toString()}
+                        onValueChange={(v) => setSelectedTermMonths(parseInt(v))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {termOptions.filter(t => t > 1).map((term) => (
+                            <SelectItem key={term} value={term.toString()}>
+                              <div className="flex items-center justify-between w-full gap-4">
+                                <span>{term} months</span>
+                                <span className="text-xs text-muted-foreground">
+                                  ({Math.floor(term / 12)} year{Math.floor(term / 12) !== 1 ? 's' : ''})
+                                </span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Term Tier Info */}
+                    <div className="rounded-lg bg-blue-50 border border-blue-200 p-4">
+                      <div className="text-sm font-medium text-blue-800">
+                        {getTermTierLabel(selectedTermMonths)}
+                      </div>
+                      <p className="text-sm text-blue-600 mt-1">
+                        Longer commitments typically qualify for higher term discounts.
+                      </p>
+                    </div>
+
+                    {/* Years covered info */}
+                    {availableYears.length > 0 && (
+                      <div className="text-sm text-muted-foreground">
+                        <span className="font-medium">Forecast years: </span>
+                        {availableYears.join(', ')}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {/* Yearly mode: show per-period preview instead of strategy picker */}
+            {commitmentMode === 'yearly' && (
+              <PerPeriodPreview scenarios={scenarios} />
+            )}
+          </div>
+        )}
+
+        {/* Pay-per-use multi-scenario info section */}
+        {isNew && fromForecast && hasMultipleScenarios && formData.quote_type === 'pay_per_use' && scenarios.length > 0 && (
+          <Card className="mb-6">
+            <CardContent className="p-4">
+              <div className="flex items-start gap-3">
+                <Repeat className="h-5 w-5 mt-0.5 text-amber-600 flex-shrink-0" />
+                <div>
+                  <div className="font-medium text-sm">Monthly Pay-per-Use Packages</div>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Creating monthly packages across the forecast period ({scenarios.length * 12} months estimated).
+                    Each month shows forecasted charges without commitment.
                   </p>
                 </div>
-
-                {/* Years covered info */}
-                {availableYears.length > 0 && (
-                  <div className="text-sm text-muted-foreground">
-                    <span className="font-medium">Forecast years: </span>
-                    {availableYears.join(', ')}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
+              </div>
+            </CardContent>
+          </Card>
         )}
 
         {/* Simple Term Selector for commitment quotes without multiple scenarios */}
@@ -1172,6 +1267,18 @@ export default function QuoteBuilder() {
               </div>
             </CardContent>
           </Card>
+        )}
+
+        {/* Manual SKU Quantities (for unmapped infrastructure SKUs) */}
+        {isNew && fromForecast && skus && skus.length > 0 && (
+          <ManualSkuInput
+            allSkus={skus}
+            forecastMappings={forecastMappings}
+            availableYears={availableYears}
+            commitmentMode={commitmentMode}
+            value={manualSkuItems}
+            onChange={setManualSkuItems}
+          />
         )}
 
         {/* Packages Section */}

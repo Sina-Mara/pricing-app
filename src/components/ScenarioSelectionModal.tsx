@@ -20,6 +20,7 @@ import {
   TrendingUp,
   Loader2,
   ChevronRight,
+  Info,
 } from 'lucide-react'
 import {
   Dialog,
@@ -217,6 +218,22 @@ export function ScenarioSelectionModal({
     return selectedScenarios.reduce((sum, s) => sum + (s.total_sims || 0), 0)
   }, [selectedScenarios])
 
+  /** Extract unique years from selected scenario names for forecast period summary */
+  const selectedYears = useMemo(() => {
+    const years = new Set<number>()
+    for (const s of selectedScenarios) {
+      // Use last match to skip year ranges like "2027-2031" in prefix
+      const allMatches = [...s.name.matchAll(/\b(20\d{2})\b/g)]
+      const match = allMatches.length > 0 ? allMatches[allMatches.length - 1] : null
+      if (match) {
+        years.add(parseInt(match[1], 10))
+      }
+    }
+    return Array.from(years).sort((a, b) => a - b)
+  }, [selectedScenarios])
+
+  const hasMultipleSelected = selectedIds.size > 1
+
   const allSelected = scenarios.length > 0 && selectedIds.size === scenarios.length
   const someSelected = selectedIds.size > 0 && selectedIds.size < scenarios.length
 
@@ -346,6 +363,20 @@ export function ScenarioSelectionModal({
             {getQuoteTypeDescription(quoteType)}
           </div>
 
+          {/* Contextual hint when multiple scenarios selected */}
+          {hasMultipleSelected && quoteType === 'commitment' && (
+            <div className="flex items-start gap-2 text-sm text-muted-foreground px-3 py-1.5">
+              <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-blue-500" />
+              <span>Commitment mode (max vs. yearly) can be configured on the next screen.</span>
+            </div>
+          )}
+          {hasMultipleSelected && quoteType === 'pay_per_use' && (
+            <div className="flex items-start gap-2 text-sm text-muted-foreground px-3 py-1.5">
+              <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-blue-500" />
+              <span>Monthly packages will be created showing month-by-month charges across the forecast period.</span>
+            </div>
+          )}
+
           <Separator />
 
           {/* Scenario List */}
@@ -373,6 +404,18 @@ export function ScenarioSelectionModal({
                   <span className="text-muted-foreground">
                     Total SIMs: <span className="font-medium text-foreground">{formatNumber(totalSims)}</span>
                   </span>
+                  {hasMultipleSelected && selectedYears.length > 0 && (
+                    <>
+                      <span className="text-muted-foreground">|</span>
+                      <span className="text-muted-foreground">
+                        {quoteType === 'commitment' ? (
+                          <>{selectedYears.length} year{selectedYears.length !== 1 ? 's' : ''} of forecast selected</>
+                        ) : (
+                          <>~{selectedYears.length * 12} monthly packages</>
+                        )}
+                      </span>
+                    </>
+                  )}
                 </div>
                 <Badge variant="secondary">
                   {getQuoteTypeLabel(quoteType)}

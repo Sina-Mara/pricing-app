@@ -15,6 +15,12 @@ import type {
   QuoteType,
   CalculatePricingResponse,
 } from '@/types/database'
+import {
+  interpolateYearlyToMonthly,
+  calculatePeriodForecast,
+  DEFAULT_FORECAST_CONFIG,
+} from '@/lib/timeseries-pricing'
+import type { YearlyDataPoint, ForecastConfig } from '@/lib/timeseries-pricing'
 
 // =============================================================================
 // Types
@@ -26,7 +32,15 @@ import type {
 export type CommitmentSizingStrategy = 'peak' | 'average' | 'specific_year'
 
 /**
- * Options for generating a commitment quote
+ * Commitment mode for multi-scenario quotes
+ * - 'max': Single package committed to the maximum forecast value across all years,
+ *   using the full contract term.
+ * - 'yearly': One package per year, each with a 12-month term, sized to that year's forecast.
+ */
+export type CommitmentMode = 'max' | 'yearly'
+
+/**
+ * Options for generating a commitment quote (legacy single-package interface)
  */
 export interface CommitmentQuoteOptions {
   /** Forecast scenarios to base the quote on */
@@ -43,6 +57,30 @@ export interface CommitmentQuoteOptions {
   title?: string
   /** Additional notes (optional) */
   notes?: string
+  /** Manual SKU quantities for unmapped infrastructure SKUs */
+  manualItems?: ManualSkuItem[]
+}
+
+/**
+ * Options for generating a multi-mode commitment quote (max or yearly)
+ */
+export interface MultiCommitmentQuoteOptions {
+  /** Forecast scenarios to base the quote on */
+  scenarios: ForecastScenario[]
+  /** Customer ID (optional) */
+  customerId?: string
+  /** Commitment mode: 'max' for single package, 'yearly' for per-year packages */
+  commitmentMode: CommitmentMode
+  /** Strategy for aggregating multiple scenarios (used by 'max' mode: peak/avg/P90/P95) */
+  strategy: CommitmentSizingStrategy
+  /** Full contract term in months (e.g., 36). Used by 'max' mode. */
+  termMonths?: number
+  /** Quote title (optional) */
+  title?: string
+  /** Additional notes (optional) */
+  notes?: string
+  /** Manual SKU quantities for unmapped infrastructure SKUs */
+  manualItems?: ManualSkuItem[]
 }
 
 /**
@@ -81,7 +119,12 @@ export interface CommitmentPreview {
  */
 export interface CommitmentQuoteResult {
   quoteId: string
+  /** First package ID (backward compatible) */
   packageId: string
+  /** All package IDs (for multi-package quotes) */
+  packageIds: string[]
+  /** Number of packages created */
+  packageCount: number
   quoteNumber?: string
   itemCount: number
 }
@@ -98,6 +141,19 @@ export interface ForecastResults {
   throughputPeak: number
   throughputAverage: number
   dataVolumeGb: number
+}
+
+/**
+ * Manual SKU quantity entry for unmapped SKUs (infrastructure items
+ * like Cennso Sites, vCores, CoreClusters, CNO SKUs, etc.).
+ */
+export interface ManualSkuItem {
+  skuId: string
+  skuCode: string
+  skuName: string
+  quantity: number
+  perYearQuantities?: Record<number, number>
+  environment: 'production' | 'reference'
 }
 
 // =============================================================================
@@ -203,9 +259,10 @@ function aggregateAverageValues(scenarios: ForecastScenario[]): AggregatedKpiVal
  * Attempts to match year from scenario name (e.g., "Forecast - 2026")
  */
 function getValuesForYear(scenarios: ForecastScenario[], year: number): AggregatedKpiValues {
-  // Try to find scenario by year in name
+  // Try to find scenario by year in name (use last match to skip year ranges like "2027-2031")
   const yearScenario = scenarios.find(s => {
-    const match = s.name.match(/\b(20\d{2})\b/)
+    const allMatches = [...s.name.matchAll(/\b(20\d{2})\b/g)]
+    const match = allMatches.length > 0 ? allMatches[allMatches.length - 1] : null
     return match && parseInt(match[1]) === year
   })
 
@@ -260,7 +317,9 @@ export function extractYearsFromScenarios(scenarios: ForecastScenario[]): number
   const years = new Set<number>()
 
   for (const scenario of scenarios) {
-    const match = scenario.name.match(/\b(20\d{2})\b/)
+    // Use last match to skip year ranges like "2027-2031" in prefix
+    const allMatches = [...scenario.name.matchAll(/\b(20\d{2})\b/g)]
+    const match = allMatches.length > 0 ? allMatches[allMatches.length - 1] : null
     if (match) {
       years.add(parseInt(match[1]))
     }
@@ -313,6 +372,60 @@ function mapValuesToKpis(values: AggregatedKpiValues): Record<ForecastKpiType, n
     peak_throughput: values.peakThroughput,
     avg_throughput: values.avgThroughput,
   }
+}
+
+// =============================================================================
+// Manual SKU Item Insertion
+// =============================================================================
+
+/**
+ * Insert manual SKU items into a package.
+ *
+ * Resolves quantity per item: if `year` is provided and the item has a
+ * per-year override for that year, use it; otherwise use the base quantity.
+ * Only items with resolved quantity > 0 are inserted.
+ *
+ * @param packageId - Target package ID
+ * @param manualItems - Array of manual SKU items
+ * @param year - Optional year for per-year quantity resolution
+ * @param startSortOrder - Starting sort_order for inserted items
+ * @param notePrefix - Prefix for the notes field
+ * @returns Number of items inserted
+ */
+async function insertManualItems(
+  packageId: string,
+  manualItems: ManualSkuItem[],
+  year: number | undefined,
+  startSortOrder: number,
+  notePrefix: string,
+): Promise<number> {
+  const itemsToInsert = manualItems
+    .map((item, index) => {
+      const quantity = year != null && item.perYearQuantities?.[year] != null
+        ? item.perYearQuantities[year]
+        : item.quantity
+      return {
+        package_id: packageId,
+        sku_id: item.skuId,
+        quantity,
+        environment: item.environment,
+        sort_order: startSortOrder + index,
+        notes: `${notePrefix} (manual entry: ${item.skuCode})`,
+      }
+    })
+    .filter(i => i.quantity > 0)
+
+  if (itemsToInsert.length === 0) return 0
+
+  const { error } = await supabase
+    .from('quote_items')
+    .insert(itemsToInsert)
+
+  if (error) {
+    throw new Error(`Failed to insert manual items: ${error.message}`)
+  }
+
+  return itemsToInsert.length
 }
 
 // =============================================================================
@@ -499,6 +612,18 @@ export async function generateCommitmentQuote(
     }
   }
 
+  // Step 5b: Insert manual SKU items (if any)
+  let manualCount = 0
+  if (options.manualItems && options.manualItems.length > 0) {
+    manualCount = await insertManualItems(
+      pkg.id,
+      options.manualItems,
+      undefined,
+      itemsToCreate.length + 1,
+      'Commitment',
+    )
+  }
+
   // Step 6: Trigger pricing calculation
   try {
     await invokeEdgeFunction<CalculatePricingResponse>(
@@ -513,8 +638,10 @@ export async function generateCommitmentQuote(
   return {
     quoteId: quote.id,
     packageId: pkg.id,
+    packageIds: [pkg.id],
+    packageCount: 1,
     quoteNumber: quote.quote_number,
-    itemCount: itemsToCreate.length,
+    itemCount: itemsToCreate.length + manualCount,
   }
 }
 
@@ -616,6 +743,8 @@ export async function generatePayPerUseQuote(
   return {
     quoteId: quote.id,
     packageId: pkg.id,
+    packageIds: [pkg.id],
+    packageCount: 1,
     quoteNumber: quote.quote_number,
     itemCount: itemsToCreate.length,
   }
@@ -713,5 +842,628 @@ export async function updateQuoteType(
     )
   } catch (error) {
     console.warn('Pricing recalculation failed after type change:', error)
+  }
+}
+
+// =============================================================================
+// Multi-Mode Commitment Quote Generation
+// =============================================================================
+
+/**
+ * Group forecast scenarios by year extracted from their name.
+ * Matches years using the pattern `\b(20\d{2})\b`.
+ * Scenarios without a year in the name are grouped under a synthetic
+ * "period" key based on creation order.
+ *
+ * @returns Map<number, ForecastScenario[]> sorted by year
+ */
+export function groupScenariosByYear(
+  scenarios: ForecastScenario[]
+): Map<number, ForecastScenario[]> {
+  const yearMap = new Map<number, ForecastScenario[]>()
+  let periodCounter = 1
+
+  for (const scenario of scenarios) {
+    // Use the LAST year found in the name to avoid matching year ranges like "2027-2031"
+    const allMatches = [...scenario.name.matchAll(/\b(20\d{2})\b/g)]
+    const match = allMatches.length > 0 ? allMatches[allMatches.length - 1] : null
+    let year: number
+
+    if (match) {
+      year = parseInt(match[1])
+    } else {
+      // No year in name — assign a synthetic period key by creation order
+      year = periodCounter++
+    }
+
+    if (!yearMap.has(year)) {
+      yearMap.set(year, [])
+    }
+    yearMap.get(year)!.push(scenario)
+  }
+
+  // Return sorted by year
+  const sortedMap = new Map<number, ForecastScenario[]>(
+    Array.from(yearMap.entries()).sort(([a], [b]) => a - b)
+  )
+
+  return sortedMap
+}
+
+/**
+ * Converts ForecastScenario[] to YearlyDataPoint[] for interop with
+ * timeseries-pricing.ts functions (e.g., interpolateYearlyToMonthly).
+ *
+ * Maps:
+ * - total_sims → totalSims
+ * - total_sims * gb_per_sim → totalDataUsageGb
+ * - year extracted from scenario name via regex
+ *
+ * For scenarios with the same year, the last scenario's values are used.
+ */
+export function scenariosToYearlyDataPoints(
+  scenarios: ForecastScenario[]
+): YearlyDataPoint[] {
+  const grouped = groupScenariosByYear(scenarios)
+  const dataPoints: YearlyDataPoint[] = []
+
+  for (const [year, yearScenarios] of grouped) {
+    // If multiple scenarios share the same year, aggregate (use peak values)
+    if (yearScenarios.length === 1) {
+      const s = yearScenarios[0]
+      dataPoints.push({
+        year,
+        totalSims: s.total_sims,
+        totalDataUsageGb: s.total_sims * s.gb_per_sim,
+      })
+    } else {
+      // Aggregate: use max total_sims across scenarios for the year,
+      // and compute totalDataUsageGb from max sims and corresponding gb_per_sim
+      const maxSimsScenario = yearScenarios.reduce((max, s) =>
+        s.total_sims > max.total_sims ? s : max
+      )
+      dataPoints.push({
+        year,
+        totalSims: maxSimsScenario.total_sims,
+        totalDataUsageGb: maxSimsScenario.total_sims * maxSimsScenario.gb_per_sim,
+      })
+    }
+  }
+
+  return dataPoints
+}
+
+/**
+ * Generate a max commitment quote (single package with full contract term).
+ *
+ * Aggregates all scenarios to find the maximum KPI values across the entire
+ * forecast (respecting the strategy — peak takes highest, average takes mean).
+ * Creates one package with term_months = termMonths.
+ */
+export async function generateMaxCommitmentQuote(
+  options: MultiCommitmentQuoteOptions
+): Promise<CommitmentQuoteResult> {
+  const {
+    scenarios,
+    customerId,
+    strategy,
+    termMonths = DEFAULT_COMMITMENT_TERM,
+    title,
+    notes,
+  } = options
+
+  if (scenarios.length === 0) {
+    throw new Error('At least one scenario is required')
+  }
+
+  // Aggregate scenario values using the specified strategy
+  const aggregatedValues = aggregateScenarioValues(scenarios, strategy)
+
+  // Fetch SKU mappings
+  const mappings = await fetchSkuMappings()
+  if (mappings.length === 0) {
+    throw new Error('No active SKU mappings configured. Please configure mappings in Admin > Forecast Mapping.')
+  }
+
+  // Create the quote
+  const versionGroupId = crypto.randomUUID()
+  const yearRange = getYearRangeFromScenarios(scenarios)
+  const primaryScenario = scenarios[0]
+
+  const strategyLabel = strategy === 'specific_year' ? `Year (specific)` : strategy
+  const defaultTitle = title || `Max Commitment Quote${yearRange ? ` (${yearRange})` : ''} - ${strategyLabel}`
+
+  const { data: quote, error: quoteError } = await supabase
+    .from('quotes')
+    .insert({
+      customer_id: customerId || primaryScenario.customer_id || null,
+      title: defaultTitle,
+      status: 'draft',
+      quote_type: 'commitment',
+      use_aggregated_pricing: true,
+      notes: notes || `Max commitment from ${scenarios.length} scenario(s) using ${strategy} strategy. ${aggregatedValues.sourceInfo}`,
+      version_group_id: versionGroupId,
+      version_number: 1,
+      source_scenario_id: primaryScenario.id,
+    })
+    .select('id, quote_number')
+    .single()
+
+  if (quoteError) {
+    throw new Error(`Failed to create quote: ${quoteError.message}`)
+  }
+
+  // Create single package with full contract term
+  const packageName = `Max ${strategy.charAt(0).toUpperCase() + strategy.slice(1).replace('_', ' ')} Commitment - ${termMonths} months`
+
+  const { data: pkg, error: pkgError } = await supabase
+    .from('quote_packages')
+    .insert({
+      quote_id: quote.id,
+      package_name: packageName,
+      term_months: termMonths,
+      status: 'new',
+      sort_order: 1,
+    })
+    .select('id')
+    .single()
+
+  if (pkgError) {
+    throw new Error(`Failed to create package: ${pkgError.message}`)
+  }
+
+  // Create line items
+  const kpiValues = mapValuesToKpis(aggregatedValues)
+
+  const itemsToCreate = mappings
+    .filter(m => m.is_active && kpiValues[m.kpi_type] !== undefined)
+    .map((mapping, index) => {
+      const quantity = Math.ceil(kpiValues[mapping.kpi_type] * mapping.multiplier)
+      return {
+        package_id: pkg.id,
+        sku_id: mapping.sku_id,
+        quantity: Math.max(1, quantity),
+        environment: 'production' as const,
+        sort_order: index + 1,
+        notes: `${mapping.kpi_type.toUpperCase()}: ${kpiValues[mapping.kpi_type].toLocaleString()} x ${mapping.multiplier}`,
+      }
+    })
+    .filter(item => item.quantity > 0)
+
+  if (itemsToCreate.length > 0) {
+    const { error: itemsError } = await supabase
+      .from('quote_items')
+      .insert(itemsToCreate)
+
+    if (itemsError) {
+      throw new Error(`Failed to create quote items: ${itemsError.message}`)
+    }
+  }
+
+  // Insert manual SKU items (if any)
+  let manualCount = 0
+  if (options.manualItems && options.manualItems.length > 0) {
+    manualCount = await insertManualItems(
+      pkg.id,
+      options.manualItems,
+      undefined,
+      itemsToCreate.length + 1,
+      'Max commitment',
+    )
+  }
+
+  // Trigger pricing calculation
+  try {
+    await invokeEdgeFunction<CalculatePricingResponse>(
+      'calculate-pricing',
+      { action: 'calculate_quote', quote_id: quote.id }
+    )
+  } catch (error) {
+    console.warn('Failed to calculate initial pricing:', error)
+  }
+
+  return {
+    quoteId: quote.id,
+    packageId: pkg.id,
+    packageIds: [pkg.id],
+    packageCount: 1,
+    quoteNumber: quote.quote_number,
+    itemCount: itemsToCreate.length + manualCount,
+  }
+}
+
+/**
+ * Generate a yearly commitment quote (one package per year, each with 12-month term).
+ *
+ * Groups scenarios by year, creates a single quote record, then creates one
+ * package per year with term_months=12 and line items sized to that year's
+ * scenario KPI values.
+ */
+export async function generateYearlyCommitmentQuote(
+  options: MultiCommitmentQuoteOptions
+): Promise<CommitmentQuoteResult> {
+  const {
+    scenarios,
+    customerId,
+    title,
+    notes,
+  } = options
+
+  if (scenarios.length === 0) {
+    throw new Error('At least one scenario is required')
+  }
+
+  // Group scenarios by year
+  const yearGroups = groupScenariosByYear(scenarios)
+
+  console.log('[generateYearlyCommitmentQuote] Year groups:', {
+    groupCount: yearGroups.size,
+    groups: Array.from(yearGroups.entries()).map(([year, s]) => ({
+      year,
+      scenarioCount: s.length,
+      names: s.map(sc => sc.name),
+    })),
+  })
+
+  // Fetch SKU mappings
+  const mappings = await fetchSkuMappings()
+  if (mappings.length === 0) {
+    throw new Error('No active SKU mappings configured. Please configure mappings in Admin > Forecast Mapping.')
+  }
+
+  // Create the quote
+  const versionGroupId = crypto.randomUUID()
+  const yearRange = getYearRangeFromScenarios(scenarios)
+  const primaryScenario = scenarios[0]
+  const yearCount = yearGroups.size
+
+  const defaultTitle = title || `Yearly Commitment Quote${yearRange ? ` (${yearRange})` : ''} - ${yearCount} year(s)`
+
+  const { data: quote, error: quoteError } = await supabase
+    .from('quotes')
+    .insert({
+      customer_id: customerId || primaryScenario.customer_id || null,
+      title: defaultTitle,
+      status: 'draft',
+      quote_type: 'commitment',
+      use_aggregated_pricing: true,
+      notes: notes || `Yearly commitment from ${scenarios.length} scenario(s) across ${yearCount} year(s). One package per year with 12-month term.`,
+      version_group_id: versionGroupId,
+      version_number: 1,
+      source_scenario_id: primaryScenario.id,
+    })
+    .select('id, quote_number')
+    .single()
+
+  if (quoteError) {
+    throw new Error(`Failed to create quote: ${quoteError.message}`)
+  }
+
+  // Create one package per year
+  const packageIds: string[] = []
+  let totalItemCount = 0
+  let sortOrder = 1
+
+  for (const [year, yearScenarios] of yearGroups) {
+    // For each year, aggregate using peak (within-year max)
+    const yearValues = aggregatePeakValues(yearScenarios)
+
+    const packageName = `Year ${sortOrder} - ${year}`
+
+    const { data: pkg, error: pkgError } = await supabase
+      .from('quote_packages')
+      .insert({
+        quote_id: quote.id,
+        package_name: packageName,
+        term_months: 12,
+        status: 'new',
+        sort_order: sortOrder,
+      })
+      .select('id')
+      .single()
+
+    if (pkgError) {
+      throw new Error(`Failed to create package for year ${year}: ${pkgError.message}`)
+    }
+
+    packageIds.push(pkg.id)
+
+    // Create line items for this year's package
+    const kpiValues = mapValuesToKpis(yearValues)
+
+    const itemsToCreate = mappings
+      .filter(m => m.is_active && kpiValues[m.kpi_type] !== undefined)
+      .map((mapping, index) => {
+        const quantity = Math.ceil(kpiValues[mapping.kpi_type] * mapping.multiplier)
+        return {
+          package_id: pkg.id,
+          sku_id: mapping.sku_id,
+          quantity: Math.max(1, quantity),
+          environment: 'production' as const,
+          sort_order: index + 1,
+          notes: `Year ${year} - ${mapping.kpi_type.toUpperCase()}: ${kpiValues[mapping.kpi_type].toLocaleString()} x ${mapping.multiplier}`,
+        }
+      })
+      .filter(item => item.quantity > 0)
+
+    if (itemsToCreate.length > 0) {
+      const { error: itemsError } = await supabase
+        .from('quote_items')
+        .insert(itemsToCreate)
+
+      if (itemsError) {
+        throw new Error(`Failed to create items for year ${year}: ${itemsError.message}`)
+      }
+    }
+
+    // Insert manual SKU items for this year (if any)
+    let manualCount = 0
+    if (options.manualItems && options.manualItems.length > 0) {
+      manualCount = await insertManualItems(
+        pkg.id,
+        options.manualItems,
+        year,
+        itemsToCreate.length + 1,
+        `Year ${year}`,
+      )
+    }
+
+    totalItemCount += itemsToCreate.length + manualCount
+    sortOrder++
+  }
+
+  // Trigger pricing calculation
+  try {
+    await invokeEdgeFunction<CalculatePricingResponse>(
+      'calculate-pricing',
+      { action: 'calculate_quote', quote_id: quote.id }
+    )
+  } catch (error) {
+    console.warn('Failed to calculate initial pricing:', error)
+  }
+
+  return {
+    quoteId: quote.id,
+    packageId: packageIds[0],
+    packageIds,
+    packageCount: packageIds.length,
+    quoteNumber: quote.quote_number,
+    itemCount: totalItemCount,
+  }
+}
+
+/**
+ * Dispatcher for multi-mode commitment quote generation.
+ *
+ * Routes to generateMaxCommitmentQuote() or generateYearlyCommitmentQuote()
+ * based on commitmentMode. Single scenario always falls back to existing
+ * single-package behavior regardless of mode.
+ */
+export async function generateMultiModeCommitmentQuote(
+  options: MultiCommitmentQuoteOptions
+): Promise<CommitmentQuoteResult> {
+  const { scenarios, commitmentMode } = options
+
+  console.log('[generateMultiModeCommitmentQuote] called:', {
+    scenarioCount: scenarios.length,
+    commitmentMode,
+    scenarioNames: scenarios.map(s => s.name),
+  })
+
+  // Single scenario: fall back to existing single-package behavior
+  if (scenarios.length <= 1) {
+    console.log('[generateMultiModeCommitmentQuote] Single scenario → fallback to generateCommitmentQuote')
+    return generateCommitmentQuote({
+      scenarios,
+      customerId: options.customerId,
+      termMonths: options.termMonths || DEFAULT_COMMITMENT_TERM,
+      strategy: options.strategy,
+      title: options.title,
+      notes: options.notes,
+      manualItems: options.manualItems,
+    })
+  }
+
+  // Multi-scenario: route based on commitment mode
+  console.log('[generateMultiModeCommitmentQuote] Routing to:', commitmentMode)
+  switch (commitmentMode) {
+    case 'max':
+      return generateMaxCommitmentQuote(options)
+    case 'yearly':
+      return generateYearlyCommitmentQuote(options)
+    default:
+      console.warn('[generateMultiModeCommitmentQuote] Unknown mode, defaulting to max:', commitmentMode)
+      return generateMaxCommitmentQuote(options)
+  }
+}
+
+// =============================================================================
+// Per-Period Pay-Per-Use Quote Generation
+// =============================================================================
+
+/**
+ * Generate a per-period pay-per-use quote with monthly packages.
+ *
+ * Converts scenarios to YearlyDataPoint[], interpolates to monthly granularity
+ * via interpolateYearlyToMonthly(), then creates one package per month with
+ * term_months=1. Each package's line items reflect that month's forecasted
+ * KPI values via calculatePeriodForecast().
+ *
+ * @param scenarios - Forecast scenarios (typically yearly)
+ * @param customerId - Optional customer ID
+ * @param title - Optional quote title
+ * @param notes - Optional notes
+ * @returns CommitmentQuoteResult with all monthly package IDs
+ */
+export async function generatePerPeriodPayPerUseQuote(
+  scenarios: ForecastScenario[],
+  customerId?: string,
+  title?: string,
+  notes?: string,
+  manualItems?: ManualSkuItem[],
+): Promise<CommitmentQuoteResult> {
+  if (scenarios.length === 0) {
+    throw new Error('At least one scenario is required')
+  }
+
+  // Convert scenarios to yearly data points
+  const yearlyDataPoints = scenariosToYearlyDataPoints(scenarios)
+
+  // Interpolate to monthly granularity
+  const monthlyData = interpolateYearlyToMonthly(yearlyDataPoints)
+
+  if (monthlyData.length === 0) {
+    throw new Error('No monthly data points generated from forecast scenarios')
+  }
+
+  // Extract forecast config from first scenario
+  const primaryScenario = scenarios[0]
+  const forecastConfig: ForecastConfig = {
+    takeRatePcsUdr: primaryScenario.take_rate_pcs_udr ?? DEFAULT_FORECAST_CONFIG.takeRatePcsUdr,
+    takeRateCcsUdr: primaryScenario.take_rate_ccs_udr ?? DEFAULT_FORECAST_CONFIG.takeRateCcsUdr,
+    takeRateScsPcs: primaryScenario.take_rate_scs_pcs ?? DEFAULT_FORECAST_CONFIG.takeRateScsPcs,
+    peakAverageRatio: primaryScenario.peak_average_ratio ?? DEFAULT_FORECAST_CONFIG.peakAverageRatio,
+    busyHours: primaryScenario.busy_hours ?? DEFAULT_FORECAST_CONFIG.busyHours,
+    daysPerMonth: primaryScenario.days_per_month ?? DEFAULT_FORECAST_CONFIG.daysPerMonth,
+    gbitPerGb: DEFAULT_FORECAST_CONFIG.gbitPerGb,
+  }
+
+  // Fetch SKU mappings
+  const mappings = await fetchSkuMappings()
+  if (mappings.length === 0) {
+    throw new Error('No active SKU mappings configured. Please configure mappings in Admin > Forecast Mapping.')
+  }
+
+  // Create the quote
+  const versionGroupId = crypto.randomUUID()
+  const yearRange = getYearRangeFromScenarios(scenarios)
+  const scenarioLabel = scenarios.length === 1 ? primaryScenario.name : `${scenarios.length} Scenarios`
+
+  const defaultTitle = title || `Pay-per-Use Quote${yearRange ? ` (${yearRange})` : ''} - ${monthlyData.length} months`
+
+  const { data: quote, error: quoteError } = await supabase
+    .from('quotes')
+    .insert({
+      customer_id: customerId || primaryScenario.customer_id || null,
+      title: defaultTitle,
+      status: 'draft',
+      quote_type: 'pay_per_use',
+      use_aggregated_pricing: false,
+      notes: notes || `Per-period pay-per-use from ${scenarioLabel}. ${monthlyData.length} monthly packages.`,
+      version_group_id: versionGroupId,
+      version_number: 1,
+      source_scenario_id: primaryScenario.id,
+    })
+    .select('id, quote_number')
+    .single()
+
+  if (quoteError) {
+    throw new Error(`Failed to create quote: ${quoteError.message}`)
+  }
+
+  // Create one package per month
+  const packageIds: string[] = []
+  let totalItemCount = 0
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+  for (let i = 0; i < monthlyData.length; i++) {
+    const monthPoint = monthlyData[i]
+
+    // Calculate KPI outputs for this month
+    const periodForecast = calculatePeriodForecast(
+      monthPoint.totalSims,
+      monthPoint.gbPerSim,
+      forecastConfig
+    )
+
+    const packageName = `${months[monthPoint.month - 1]} ${monthPoint.year}`
+
+    const { data: pkg, error: pkgError } = await supabase
+      .from('quote_packages')
+      .insert({
+        quote_id: quote.id,
+        package_name: packageName,
+        term_months: PAY_PER_USE_TERM,
+        status: 'new',
+        sort_order: i + 1,
+      })
+      .select('id')
+      .single()
+
+    if (pkgError) {
+      throw new Error(`Failed to create package for ${packageName}: ${pkgError.message}`)
+    }
+
+    packageIds.push(pkg.id)
+
+    // Map period forecast to KPI values
+    const periodKpiValues: Record<ForecastKpiType, number> = {
+      udr: periodForecast.udr,
+      pcs: periodForecast.pcs,
+      ccs: periodForecast.ccs,
+      scs: periodForecast.scs,
+      cos: periodForecast.cos,
+      peak_throughput: periodForecast.peakThroughput,
+      avg_throughput: periodForecast.avgThroughput,
+    }
+
+    const itemsToCreate = mappings
+      .filter(m => m.is_active && periodKpiValues[m.kpi_type] !== undefined)
+      .map((mapping, index) => {
+        const quantity = Math.ceil(periodKpiValues[mapping.kpi_type] * mapping.multiplier)
+        return {
+          package_id: pkg.id,
+          sku_id: mapping.sku_id,
+          quantity: Math.max(1, quantity),
+          environment: 'production' as const,
+          sort_order: index + 1,
+          notes: `${packageName} - ${mapping.kpi_type.toUpperCase()}: ${periodKpiValues[mapping.kpi_type].toLocaleString()} x ${mapping.multiplier}`,
+        }
+      })
+      .filter(item => item.quantity > 0)
+
+    if (itemsToCreate.length > 0) {
+      const { error: itemsError } = await supabase
+        .from('quote_items')
+        .insert(itemsToCreate)
+
+      if (itemsError) {
+        throw new Error(`Failed to create items for ${packageName}: ${itemsError.message}`)
+      }
+    }
+
+    // Insert manual SKU items for this month (if any)
+    let manualCount = 0
+    if (manualItems && manualItems.length > 0) {
+      manualCount = await insertManualItems(
+        pkg.id,
+        manualItems,
+        monthPoint.year,
+        itemsToCreate.length + 1,
+        packageName,
+      )
+    }
+
+    totalItemCount += itemsToCreate.length + manualCount
+  }
+
+  // Trigger pricing calculation
+  try {
+    await invokeEdgeFunction<CalculatePricingResponse>(
+      'calculate-pricing',
+      { action: 'calculate_quote', quote_id: quote.id }
+    )
+  } catch (error) {
+    console.warn('Failed to calculate initial pricing:', error)
+  }
+
+  return {
+    quoteId: quote.id,
+    packageId: packageIds[0],
+    packageIds,
+    packageCount: packageIds.length,
+    quoteNumber: quote.quote_number,
+    itemCount: totalItemCount,
   }
 }
