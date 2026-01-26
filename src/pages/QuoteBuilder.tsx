@@ -52,6 +52,8 @@ import {
   GitBranch,
   TrendingUp,
   MoreHorizontal,
+  Repeat,
+  Lock,
 } from 'lucide-react'
 import { formatCurrency, formatPercent, getStatusColor } from '@/lib/utils'
 import type {
@@ -61,15 +63,31 @@ import type {
   Customer,
   Sku,
   QuoteStatus,
+  QuoteType,
   CalculatePricingResponse,
   ForecastSkuMapping,
   ForecastKpiType,
+  ForecastScenario,
 } from '@/types/database'
 import { generateQuotePDF } from '@/lib/pdf'
 import { QuickQuantityInput } from '@/components/QuickQuantityInput'
+import { CommitmentStrategyPicker } from '@/components/CommitmentStrategyPicker'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  type CommitmentSizingStrategy,
+  generateCommitmentQuote,
+  getTermTierLabel,
+  extractYearsFromScenarios,
+} from '@/lib/quote-generator'
+import { AlertTriangle, Settings2 } from 'lucide-react'
 
 const statusOptions: QuoteStatus[] = ['draft', 'pending', 'sent', 'accepted', 'rejected', 'expired', 'ordered']
 const termOptions = [1, 12, 24, 36, 48, 60]
+
+/** Pay-per-use quotes use 1-month term (no commitment) */
+const PAY_PER_USE_TERM = 1
+/** Default term for commitment quotes */
+const DEFAULT_COMMITMENT_TERM = 36
 
 interface ForecastResults {
   udr: number
@@ -85,9 +103,12 @@ interface ForecastResults {
 interface LocationState {
   fromForecast?: boolean
   scenarioId?: string
+  /** Multiple scenario IDs for multi-year/multi-scenario quotes */
+  scenarioIds?: string[]
   customerId?: string
   forecastResults?: ForecastResults
   scenarioName?: string
+  quoteType?: QuoteType
 }
 
 export default function QuoteBuilder() {
@@ -112,6 +133,14 @@ export default function QuoteBuilder() {
   const [applyingForecast, setApplyingForecast] = useState(false)
   const [autoCalculate, setAutoCalculate] = useState(true)
   const [pendingCalculation, setPendingCalculation] = useState(false)
+
+  // Commitment strategy state (for multi-scenario quotes)
+  const [commitmentStrategy, setCommitmentStrategy] = useState<CommitmentSizingStrategy>('peak')
+  const [specificYear, setSpecificYear] = useState<number | undefined>(undefined)
+  const [selectedTermMonths, setSelectedTermMonths] = useState(DEFAULT_COMMITMENT_TERM)
+
+  // Check if we have multiple scenarios
+  const hasMultipleScenarios = (locationState?.scenarioIds?.length || 0) > 1
 
   // Fetch quote data
   const { data: quote, isLoading: quoteLoading, refetch: refetchQuote } = useQuery({
@@ -193,6 +222,28 @@ export default function QuoteBuilder() {
     enabled: fromForecast,
   })
 
+  // Fetch scenarios when we have multiple scenario IDs (for strategy picker)
+  const { data: scenarios = [] } = useQuery({
+    queryKey: ['forecast-scenarios-for-quote', locationState?.scenarioIds],
+    queryFn: async () => {
+      if (!locationState?.scenarioIds || locationState.scenarioIds.length === 0) return []
+      const { data, error } = await supabase
+        .from('forecast_scenarios')
+        .select('*')
+        .in('id', locationState.scenarioIds)
+      if (error) throw error
+      return data as ForecastScenario[]
+    },
+    enabled: hasMultipleScenarios,
+  })
+
+  // Extract available years from scenarios
+  const availableYears = extractYearsFromScenarios(scenarios)
+
+  // Check if SKU mappings are configured (important for forecast-based quotes)
+  const hasSkuMappings = forecastMappings.length > 0
+  const showSkuMappingWarning = fromForecast && isNew && !hasSkuMappings
+
   // Fetch other versions of this quote
   const { data: quoteVersions = [] } = useQuery({
     queryKey: ['quote-versions', quote?.version_group_id],
@@ -214,6 +265,7 @@ export default function QuoteBuilder() {
     customer_id: '',
     title: '',
     status: 'draft' as QuoteStatus,
+    quote_type: (locationState?.quoteType || 'commitment') as QuoteType,
     valid_until: '',
     use_aggregated_pricing: true,
     notes: '',
@@ -226,6 +278,7 @@ export default function QuoteBuilder() {
         customer_id: quote.customer_id || '',
         title: quote.title || '',
         status: quote.status,
+        quote_type: quote.quote_type || 'commitment',
         valid_until: quote.valid_until || '',
         use_aggregated_pricing: quote.use_aggregated_pricing,
         notes: quote.notes || '',
@@ -249,15 +302,35 @@ export default function QuoteBuilder() {
   // Create new quote
   const createQuote = useMutation({
     mutationFn: async () => {
+      // For multi-scenario commitment quotes, use the generateCommitmentQuote function
+      if (hasMultipleScenarios && formData.quote_type === 'commitment' && scenarios.length > 0) {
+        const result = await generateCommitmentQuote({
+          scenarios,
+          customerId: formData.customer_id || undefined,
+          termMonths: selectedTermMonths,
+          strategy: commitmentStrategy,
+          specificYear: commitmentStrategy === 'specific_year' ? specificYear : undefined,
+          title: formData.title || undefined,
+          notes: formData.notes || undefined,
+        })
+        return { id: result.quoteId, quote_number: result.quoteNumber }
+      }
+
+      // Standard quote creation for single scenario or pay-per-use
       const versionGroupId = crypto.randomUUID()
+      // For pay-per-use quotes, default to non-aggregated pricing (each period priced independently)
+      const useAggregatedPricing = formData.quote_type === 'pay_per_use'
+        ? false
+        : formData.use_aggregated_pricing
       const { data, error } = await supabase
         .from('quotes')
         .insert({
           customer_id: formData.customer_id || null,
           title: formData.title || null,
           status: formData.status,
+          quote_type: formData.quote_type,
           valid_until: formData.valid_until || null,
-          use_aggregated_pricing: formData.use_aggregated_pricing,
+          use_aggregated_pricing: useAggregatedPricing,
           notes: formData.notes || null,
           version_group_id: versionGroupId,
           version_number: 1,
@@ -270,11 +343,21 @@ export default function QuoteBuilder() {
       return data
     },
     onSuccess: async (data) => {
+      // For multi-scenario commitment quotes, the quote is already fully created
+      if (hasMultipleScenarios && formData.quote_type === 'commitment' && scenarios.length > 0) {
+        toast({
+          title: 'Commitment quote created',
+          description: `Quote created using ${commitmentStrategy} strategy with ${selectedTermMonths}-month term.`,
+        })
+        navigate(`/quotes/${data.id}`, { replace: true })
+        return
+      }
+
       toast({ title: 'Quote created' })
 
-      // If coming from forecast, auto-create package and items
+      // If coming from forecast (single scenario), auto-create package and items
       if (fromForecast && locationState?.forecastResults) {
-        await applyForecastToQuote(data.id, locationState.forecastResults)
+        await applyForecastToQuote(data.id, locationState.forecastResults, formData.quote_type)
       }
 
       navigate(`/quotes/${data.id}`, { replace: true })
@@ -285,16 +368,21 @@ export default function QuoteBuilder() {
   })
 
   // Apply forecast mappings to quote
-  const applyForecastToQuote = async (quoteId: string, results: ForecastResults) => {
+  const applyForecastToQuote = async (quoteId: string, results: ForecastResults, quoteType: QuoteType) => {
     setApplyingForecast(true)
     try {
+      // Determine term based on quote type
+      // Pay-per-use: 1-month term (no commitment, no term discounts)
+      // Commitment: use selected term (from term selector)
+      const termMonths = quoteType === 'pay_per_use' ? PAY_PER_USE_TERM : selectedTermMonths
+
       // Create a package for the forecast items
       const { data: pkg, error: pkgError } = await supabase
         .from('quote_packages')
         .insert({
           quote_id: quoteId,
-          package_name: locationState?.scenarioName || 'Forecast-based Package',
-          term_months: 36, // Default to 36 months
+          package_name: locationState?.scenarioName || (quoteType === 'pay_per_use' ? 'Pay-per-Use Package' : 'Forecast-based Package'),
+          term_months: termMonths,
           status: 'new',
           sort_order: 1,
         })
@@ -334,9 +422,21 @@ export default function QuoteBuilder() {
         if (itemsError) throw itemsError
       }
 
+      // Trigger pricing calculation immediately for pay-per-use quotes
+      if (quoteType === 'pay_per_use') {
+        try {
+          await invokeEdgeFunction<CalculatePricingResponse>(
+            'calculate-pricing',
+            { action: 'calculate_quote', quote_id: quoteId }
+          )
+        } catch (pricingError) {
+          console.warn('Initial pricing calculation failed:', pricingError)
+        }
+      }
+
       toast({
         title: 'Forecast applied',
-        description: `Created ${itemsToCreate.length} line items from forecast data.`,
+        description: `Created ${itemsToCreate.length} line items from forecast data${quoteType === 'pay_per_use' ? ' (Pay-per-Use, 1-month term)' : ` (${termMonths}-month term)`}.`,
       })
 
       // Refetch quote data
@@ -361,6 +461,7 @@ export default function QuoteBuilder() {
           customer_id: formData.customer_id || null,
           title: formData.title || null,
           status: formData.status,
+          quote_type: formData.quote_type,
           valid_until: formData.valid_until || null,
           use_aggregated_pricing: formData.use_aggregated_pricing,
           notes: formData.notes || null,
@@ -401,6 +502,7 @@ export default function QuoteBuilder() {
           customer_id: quote.customer_id,
           title: quote.title,
           status: 'draft',
+          quote_type: quote.quote_type || 'commitment',
           valid_until: quote.valid_until,
           use_aggregated_pricing: quote.use_aggregated_pricing,
           notes: quote.notes,
@@ -484,12 +586,14 @@ export default function QuoteBuilder() {
   // Add package
   const addPackage = useMutation({
     mutationFn: async () => {
+      // For pay-per-use quotes, always use 1-month term
+      const termMonths = formData.quote_type === 'pay_per_use' ? PAY_PER_USE_TERM : newPackageTerm
       const { data, error } = await supabase
         .from('quote_packages')
         .insert({
           quote_id: id,
           package_name: newPackageName,
-          term_months: newPackageTerm,
+          term_months: termMonths,
           status: 'new',
           sort_order: (quote?.quote_packages.length || 0) + 1,
         })
@@ -691,6 +795,27 @@ export default function QuoteBuilder() {
                   {quote.version_name && ` - ${quote.version_name}`}
                 </Badge>
               )}
+              {/* Quote Type Badge */}
+              <Badge
+                variant={formData.quote_type === 'commitment' ? 'default' : 'secondary'}
+                className={`text-sm ${
+                  formData.quote_type === 'commitment'
+                    ? 'bg-blue-600 hover:bg-blue-700'
+                    : 'bg-amber-600 hover:bg-amber-700 text-white'
+                }`}
+              >
+                {formData.quote_type === 'commitment' ? (
+                  <>
+                    <Lock className="mr-1 h-3 w-3" />
+                    Commitment
+                  </>
+                ) : (
+                  <>
+                    <Repeat className="mr-1 h-3 w-3" />
+                    Pay-per-Use
+                  </>
+                )}
+              </Badge>
               {fromForecast && isNew && (
                 <Badge variant="secondary" className="text-sm">
                   <TrendingUp className="mr-1 h-3 w-3" />
@@ -848,6 +973,66 @@ export default function QuoteBuilder() {
                 />
               </div>
 
+              {/* Quote Type Selector */}
+              <div className="space-y-2">
+                <Label>Quote Type</Label>
+                <Select
+                  value={formData.quote_type}
+                  onValueChange={(v) => setFormData(prev => ({ ...prev, quote_type: v as QuoteType }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="commitment">
+                      <div className="flex items-center gap-2">
+                        <Lock className="h-4 w-4 text-blue-600" />
+                        <span>Commitment</span>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="pay_per_use">
+                      <div className="flex items-center gap-2">
+                        <Repeat className="h-4 w-4 text-amber-600" />
+                        <span>Pay-per-Use</span>
+                      </div>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Quote Type Info */}
+              <div className="col-span-full">
+                <div className={`rounded-lg px-4 py-3 text-sm ${
+                  formData.quote_type === 'commitment'
+                    ? 'bg-blue-50 border border-blue-200 text-blue-800'
+                    : 'bg-amber-50 border border-amber-200 text-amber-800'
+                }`}>
+                  {formData.quote_type === 'commitment' ? (
+                    <div className="flex items-start gap-3">
+                      <Lock className="h-5 w-5 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <div className="font-medium">Commitment Pricing</div>
+                        <div className="mt-1 text-sm opacity-90">
+                          Fixed monthly pricing with term commitment. Includes volume discounts based on committed quantities
+                          and term discounts for longer commitments (12, 24, 36+ months).
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-3">
+                      <Repeat className="h-5 w-5 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <div className="font-medium">Pay-per-Use Pricing</div>
+                        <div className="mt-1 text-sm opacity-90">
+                          Variable monthly pricing based on actual usage. No term commitment required.
+                          Monthly rates apply without term discounts.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div className="col-span-full flex items-center gap-2">
                 <Switch
                   checked={formData.use_aggregated_pricing}
@@ -858,6 +1043,136 @@ export default function QuoteBuilder() {
             </div>
           </CardContent>
         </Card>
+
+        {/* SKU Mapping Warning */}
+        {showSkuMappingWarning && (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>No SKU Mappings Configured</AlertTitle>
+            <AlertDescription className="flex items-center justify-between">
+              <span>
+                Forecast-to-quote conversion requires SKU mappings to be configured.
+                Without mappings, line items cannot be auto-generated from forecast data.
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate('/admin/forecast-mapping')}
+                className="ml-4 shrink-0"
+              >
+                <Settings2 className="mr-2 h-4 w-4" />
+                Configure Mappings
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Commitment Strategy Picker (for new quotes with multiple scenarios) */}
+        {isNew && fromForecast && hasMultipleScenarios && formData.quote_type === 'commitment' && scenarios.length > 1 && (
+          <div className="grid gap-6 md:grid-cols-2">
+            {/* Strategy Picker */}
+            <CommitmentStrategyPicker
+              scenarios={scenarios}
+              strategy={commitmentStrategy}
+              onStrategyChange={setCommitmentStrategy}
+              specificYear={specificYear}
+              onSpecificYearChange={setSpecificYear}
+              showPreview={true}
+            />
+
+            {/* Term Selector Card */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Lock className="h-5 w-5 text-blue-500" />
+                  Commitment Term
+                </CardTitle>
+                <CardDescription>
+                  Select the contract term length for volume and term discounts
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Term Selection */}
+                <div className="space-y-3">
+                  <Label>Term Length</Label>
+                  <Select
+                    value={selectedTermMonths.toString()}
+                    onValueChange={(v) => setSelectedTermMonths(parseInt(v))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {termOptions.filter(t => t > 1).map((term) => (
+                        <SelectItem key={term} value={term.toString()}>
+                          <div className="flex items-center justify-between w-full gap-4">
+                            <span>{term} months</span>
+                            <span className="text-xs text-muted-foreground">
+                              ({Math.floor(term / 12)} year{Math.floor(term / 12) !== 1 ? 's' : ''})
+                            </span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Term Tier Info */}
+                <div className="rounded-lg bg-blue-50 border border-blue-200 p-4">
+                  <div className="text-sm font-medium text-blue-800">
+                    {getTermTierLabel(selectedTermMonths)}
+                  </div>
+                  <p className="text-sm text-blue-600 mt-1">
+                    Longer commitments typically qualify for higher term discounts.
+                  </p>
+                </div>
+
+                {/* Years covered info */}
+                {availableYears.length > 0 && (
+                  <div className="text-sm text-muted-foreground">
+                    <span className="font-medium">Forecast years: </span>
+                    {availableYears.join(', ')}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {/* Simple Term Selector for commitment quotes without multiple scenarios */}
+        {isNew && formData.quote_type === 'commitment' && !hasMultipleScenarios && (
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Lock className="h-5 w-5 text-blue-500" />
+                Commitment Term
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-4">
+                <Label>Term Length:</Label>
+                <Select
+                  value={selectedTermMonths.toString()}
+                  onValueChange={(v) => setSelectedTermMonths(parseInt(v))}
+                >
+                  <SelectTrigger className="w-[200px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {termOptions.filter(t => t > 1).map((term) => (
+                      <SelectItem key={term} value={term.toString()}>
+                        {term} months ({Math.floor(term / 12)} year{Math.floor(term / 12) !== 1 ? 's' : ''})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="text-sm text-muted-foreground">
+                  {getTermTierLabel(selectedTermMonths)}
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Packages Section */}
         {!isNew && (
@@ -1068,6 +1383,29 @@ export default function QuoteBuilder() {
 
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
+                <span className="text-muted-foreground">Quote Type</span>
+                <Badge
+                  variant={formData.quote_type === 'commitment' ? 'default' : 'secondary'}
+                  className={
+                    formData.quote_type === 'commitment'
+                      ? 'bg-blue-600'
+                      : 'bg-amber-600 text-white'
+                  }
+                >
+                  {formData.quote_type === 'commitment' ? (
+                    <>
+                      <Lock className="mr-1 h-3 w-3" />
+                      Commitment
+                    </>
+                  ) : (
+                    <>
+                      <Repeat className="mr-1 h-3 w-3" />
+                      Pay-per-Use
+                    </>
+                  )}
+                </Badge>
+              </div>
+              <div className="flex justify-between">
                 <span className="text-muted-foreground">Packages</span>
                 <span>{quote.quote_packages.length}</span>
               </div>
@@ -1146,21 +1484,33 @@ export default function QuoteBuilder() {
             </div>
             <div className="space-y-2">
               <Label>Term (months)</Label>
-              <Select
-                value={newPackageTerm.toString()}
-                onValueChange={(v) => setNewPackageTerm(parseInt(v))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {termOptions.map((term) => (
-                    <SelectItem key={term} value={term.toString()}>
-                      {term} months
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {formData.quote_type === 'pay_per_use' ? (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 rounded-md border px-3 py-2 bg-muted/50">
+                    <Repeat className="h-4 w-4 text-amber-600" />
+                    <span className="text-sm">1 month (Pay-per-Use)</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Pay-per-Use quotes use 1-month terms with no commitment. Pricing is recalculated monthly based on actual usage.
+                  </p>
+                </div>
+              ) : (
+                <Select
+                  value={newPackageTerm.toString()}
+                  onValueChange={(v) => setNewPackageTerm(parseInt(v))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {termOptions.map((term) => (
+                      <SelectItem key={term} value={term.toString()}>
+                        {term} months
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           </div>
           <DialogFooter>

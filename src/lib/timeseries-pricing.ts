@@ -472,6 +472,294 @@ export function formatPeriodDate(date: Date | string, granularity: 'monthly' | '
 }
 
 /**
+ * Result of GB per SIM calculation
+ */
+export interface GbPerSimResult {
+  /** GB per SIM on a yearly basis */
+  yearly: number
+  /** GB per SIM on a monthly basis (yearly / 12) */
+  monthly: number
+}
+
+/**
+ * Calculate GB per SIM from total data usage and total SIM count.
+ *
+ * This function derives the GB per SIM metric from aggregate data:
+ * - GB per SIM (yearly) = Total Data Usage (GB) / Total SIMs
+ * - GB per SIM (monthly) = GB per SIM (yearly) / 12
+ *
+ * @example
+ * // 1,900,000 GB / 100,000 SIMs = 19 GB/SIM/year, ~1.58 GB/SIM/month
+ * const result = calculateGbPerSim(1900000, 100000)
+ * // result = { yearly: 19, monthly: 1.5833... }
+ *
+ * @param totalDataUsageGb - Total data usage in GB (yearly total)
+ * @param totalSims - Total number of SIMs
+ * @returns Object containing yearly and monthly GB per SIM values, or null for invalid inputs
+ */
+export function calculateGbPerSim(
+  totalDataUsageGb: number,
+  totalSims: number
+): GbPerSimResult | null {
+  // Handle edge cases: invalid inputs
+  if (
+    totalSims === null ||
+    totalSims === undefined ||
+    totalDataUsageGb === null ||
+    totalDataUsageGb === undefined ||
+    !Number.isFinite(totalSims) ||
+    !Number.isFinite(totalDataUsageGb)
+  ) {
+    return null
+  }
+
+  // Handle division by zero
+  if (totalSims <= 0) {
+    return null
+  }
+
+  // Handle negative data usage (invalid)
+  if (totalDataUsageGb < 0) {
+    return null
+  }
+
+  const gbPerSimYearly = totalDataUsageGb / totalSims
+  const gbPerSimMonthly = gbPerSimYearly / 12
+
+  return {
+    yearly: gbPerSimYearly,
+    monthly: gbPerSimMonthly,
+  }
+}
+
+/**
+ * Calculate GB per SIM and return only the yearly value.
+ *
+ * Convenience function that returns just the yearly GB per SIM value.
+ * Returns 0 for invalid inputs instead of null (useful for calculations).
+ *
+ * @param totalDataUsageGb - Total data usage in GB (yearly total)
+ * @param totalSims - Total number of SIMs
+ * @returns GB per SIM (yearly), or 0 for invalid inputs
+ */
+export function calculateGbPerSimYearly(
+  totalDataUsageGb: number,
+  totalSims: number
+): number {
+  const result = calculateGbPerSim(totalDataUsageGb, totalSims)
+  return result?.yearly ?? 0
+}
+
+/**
+ * Calculate GB per SIM and return only the monthly value.
+ *
+ * Convenience function that returns just the monthly GB per SIM value.
+ * Returns 0 for invalid inputs instead of null (useful for calculations).
+ *
+ * @param totalDataUsageGb - Total data usage in GB (yearly total)
+ * @param totalSims - Total number of SIMs
+ * @returns GB per SIM (monthly), or 0 for invalid inputs
+ */
+export function calculateGbPerSimMonthly(
+  totalDataUsageGb: number,
+  totalSims: number
+): number {
+  const result = calculateGbPerSim(totalDataUsageGb, totalSims)
+  return result?.monthly ?? 0
+}
+
+// =============================================================================
+// Yearly to Monthly Interpolation Types
+// =============================================================================
+
+/**
+ * Represents a single yearly data point for forecast interpolation
+ */
+export interface YearlyDataPoint {
+  /** The year (e.g., 2026) */
+  year: number
+  /** Total number of SIMs at end of year */
+  totalSims: number
+  /** Total data usage in GB at end of year */
+  totalDataUsageGb: number
+}
+
+/**
+ * Represents a single monthly data point after interpolation
+ */
+export interface MonthlyDataPoint {
+  /** The year (e.g., 2026) */
+  year: number
+  /** The month (1-12) */
+  month: number
+  /** Full date object for this month (first day of month) */
+  date: Date
+  /** Interpolated total SIMs for this month */
+  totalSims: number
+  /** Interpolated total data usage in GB for this month */
+  totalDataUsageGb: number
+  /** Derived GB per SIM (totalDataUsageGb / totalSims) */
+  gbPerSim: number
+}
+
+// =============================================================================
+// Yearly to Monthly Interpolation Functions
+// =============================================================================
+
+/**
+ * Expands yearly forecast data to monthly granularity using linear interpolation.
+ *
+ * The interpolation logic works as follows:
+ * - Given year-end values, we linearly interpolate between consecutive years
+ * - For a transition from Year N to Year N+1:
+ *   - Monthly increment = (Year N+1 value - Year N value) / 12
+ *   - Month M of Year N+1 = Year N value + (M * increment)
+ *   - December (M=12) equals the Year N+1 end-of-year value
+ *
+ * @example
+ * // Year 2026 = 100,000 SIMs, Year 2027 = 150,000 SIMs
+ * // Monthly increment = (150,000 - 100,000) / 12 = 4,167 SIMs/month
+ * // Jan 2027: 100,000 + (1 * 4,167) = 104,167
+ * // Feb 2027: 100,000 + (2 * 4,167) = 108,334
+ * // ...
+ * // Dec 2027: 150,000 (end-of-year value)
+ *
+ * const yearlyData = [
+ *   { year: 2026, totalSims: 100000, totalDataUsageGb: 190000 },
+ *   { year: 2027, totalSims: 150000, totalDataUsageGb: 285000 },
+ * ]
+ * const monthlyData = interpolateYearlyToMonthly(yearlyData)
+ *
+ * Edge cases handled:
+ * - Single year: Distributes evenly across 12 months (constant value)
+ * - First year: Uses the year's value as baseline for all 12 months of that year
+ * - Empty input: Returns empty array
+ *
+ * @param yearlyData - Array of yearly data points, should be sorted by year
+ * @returns Array of monthly data points with interpolated values
+ */
+export function interpolateYearlyToMonthly(
+  yearlyData: YearlyDataPoint[]
+): MonthlyDataPoint[] {
+  if (yearlyData.length === 0) {
+    return []
+  }
+
+  // Sort by year to ensure correct order
+  const sortedData = [...yearlyData].sort((a, b) => a.year - b.year)
+  const monthlyData: MonthlyDataPoint[] = []
+
+  // Handle single year case - no interpolation needed, constant values for all 12 months
+  if (sortedData.length === 1) {
+    const yearData = sortedData[0]
+    for (let month = 1; month <= 12; month++) {
+      const gbPerSim = yearData.totalSims > 0
+        ? yearData.totalDataUsageGb / yearData.totalSims
+        : 0
+
+      monthlyData.push({
+        year: yearData.year,
+        month,
+        date: new Date(yearData.year, month - 1, 1),
+        totalSims: yearData.totalSims,
+        totalDataUsageGb: yearData.totalDataUsageGb,
+        gbPerSim,
+      })
+    }
+    return monthlyData
+  }
+
+  // Handle first year - use first year's values as baseline for all 12 months
+  const firstYear = sortedData[0]
+  for (let month = 1; month <= 12; month++) {
+    const gbPerSim = firstYear.totalSims > 0
+      ? firstYear.totalDataUsageGb / firstYear.totalSims
+      : 0
+
+    monthlyData.push({
+      year: firstYear.year,
+      month,
+      date: new Date(firstYear.year, month - 1, 1),
+      totalSims: firstYear.totalSims,
+      totalDataUsageGb: firstYear.totalDataUsageGb,
+      gbPerSim,
+    })
+  }
+
+  // Interpolate between consecutive years
+  for (let i = 1; i < sortedData.length; i++) {
+    const prevYear = sortedData[i - 1]
+    const currYear = sortedData[i]
+
+    // Calculate monthly increments for linear interpolation
+    const simsIncrement = (currYear.totalSims - prevYear.totalSims) / 12
+    const dataIncrement = (currYear.totalDataUsageGb - prevYear.totalDataUsageGb) / 12
+
+    // Generate 12 months for this year
+    for (let month = 1; month <= 12; month++) {
+      // Linear interpolation: previous year end value + (month * increment)
+      const totalSims = Math.round(prevYear.totalSims + (month * simsIncrement))
+      const totalDataUsageGb = prevYear.totalDataUsageGb + (month * dataIncrement)
+      const gbPerSim = totalSims > 0 ? totalDataUsageGb / totalSims : 0
+
+      monthlyData.push({
+        year: currYear.year,
+        month,
+        date: new Date(currYear.year, month - 1, 1),
+        totalSims,
+        totalDataUsageGb,
+        gbPerSim,
+      })
+    }
+  }
+
+  return monthlyData
+}
+
+/**
+ * Converts monthly interpolated data to the ParsedTimeseriesData format
+ * used by the pricing engine.
+ *
+ * This is a convenience function to bridge the interpolation output
+ * with the existing pricing calculation functions.
+ *
+ * @param monthlyData - Array of interpolated monthly data points
+ * @returns ParsedTimeseriesData compatible object with periods and KPIs
+ */
+export function monthlyDataToParsedTimeseries(
+  monthlyData: MonthlyDataPoint[]
+): {
+  periods: Array<{ date: Date; label: string }>
+  kpis: Array<{ name: string; values: number[] }>
+} {
+  const periods = monthlyData.map(m => ({
+    date: m.date,
+    label: formatPeriodDate(m.date, 'monthly'),
+  }))
+
+  const kpis = [
+    {
+      name: 'Total SIMs',
+      values: monthlyData.map(m => m.totalSims),
+    },
+    {
+      name: 'GB per SIM',
+      values: monthlyData.map(m => m.gbPerSim),
+    },
+    {
+      name: 'Total Data Usage GB',
+      values: monthlyData.map(m => m.totalDataUsageGb),
+    },
+  ]
+
+  return { periods, kpis }
+}
+
+// =============================================================================
+// Summary Statistics
+// =============================================================================
+
+/**
  * Generate summary statistics for a time-series forecast
  */
 export function generateForecastSummary(periodForecasts: PeriodForecastResult[]): {

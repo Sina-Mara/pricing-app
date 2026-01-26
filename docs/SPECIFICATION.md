@@ -19,6 +19,9 @@ The Pricing App is an enterprise-grade pricing engine and quote management syste
 | Timeline Visualization | Contract lifecycle Gantt view | Complete |
 | Forecast Evaluator | License requirement calculator | Complete |
 | Time-Series Forecast | Excel import with pay-per-use & fixed commitment pricing | Complete |
+| Yearly Forecast Input | Direct input of yearly SIMs & data usage with interpolation | Complete |
+| Scenario Generation | Create per-year or consolidated scenarios from forecasts | Complete |
+| Quote Type Selection | Pay-per-Use vs Commitment quote types with strategy picker | Complete |
 
 ## 2. Admin Features
 
@@ -43,6 +46,9 @@ The Pricing App is an enterprise-grade pricing engine and quote management syste
 | Time-Phased Aggregation | Weighted pricing across contract phases |
 | Perpetual Alternative | License + maintenance calculation |
 | Time-Series Pricing | Pay-per-use (monthly) or fixed commitment (peak/avg/percentile) |
+| Yearly Forecast Pricing | Direct yearly input with linear interpolation to monthly |
+| Scenario-Based Quoting | Generate quotes from forecast scenarios (per-year or consolidated) |
+| Quote Types | Commitment (term discounts) vs Pay-per-Use (1-month, no term discounts) |
 
 ## 4. Data Model Summary
 
@@ -63,8 +69,12 @@ The Pricing App is an enterprise-grade pricing engine and quote management syste
 - `forecast_sku_mappings` - KPI to SKU mappings for forecasting
 
 ### Time-Series Tables
-- `timeseries_forecasts` - Forecast containers with config
-- `timeseries_forecast_data` - Per-period data points
+- `timeseries_forecasts` - Forecast containers with config (supports yearly granularity with config JSON)
+- `timeseries_forecast_data` - Per-period data points (monthly, interpolated from yearly)
+
+### Forecast & Quote Types
+- `forecast_scenarios` - Saved forecast scenarios (per-year or consolidated)
+- `quotes.quote_type` - Commitment or Pay-per-Use pricing mode
 
 ## 5. Technical Stack
 

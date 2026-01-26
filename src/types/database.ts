@@ -5,6 +5,7 @@ export type SkuCategory = 'default' | 'cas' | 'cno' | 'ccs'
 export type EnvironmentType = 'production' | 'reference'
 export type QuoteStatus = 'draft' | 'pending' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'ordered'
 export type PackageStatus = 'new' | 'ordered' | 'existing' | 'cancelled'
+export type QuoteType = 'commitment' | 'pay_per_use'
 
 export interface Sku {
   id: string
@@ -89,6 +90,7 @@ export interface Quote {
   quote_number: string
   customer_id: string | null
   status: QuoteStatus
+  quote_type: QuoteType
   title: string | null
   notes: string | null
   valid_until: string | null
@@ -167,6 +169,7 @@ export interface QuoteSummary {
   quote_number: string
   title: string | null
   status: QuoteStatus
+  quote_type: QuoteType
   customer_name: string | null
   customer_company: string | null
   total_monthly: number
@@ -341,6 +344,8 @@ export interface TimeseriesForecast {
   days_per_month: number
   // Import metadata
   original_filename: string | null
+  // Custom config (stores original yearly data for yearly granularity)
+  config?: YearlyForecastConfig | null
   // Metadata
   created_by: string | null
   created_at: string
@@ -348,6 +353,15 @@ export interface TimeseriesForecast {
   // Joined data
   customer?: Customer
   data_points?: TimeseriesForecastData[]
+}
+
+// Config structure for yearly forecasts
+export interface YearlyForecastConfig {
+  yearlyData: {
+    year: number
+    endOfYearSims: number
+    totalDataUsageGB: number
+  }[]
 }
 
 export interface TimeseriesForecastData {

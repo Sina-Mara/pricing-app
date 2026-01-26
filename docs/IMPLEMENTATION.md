@@ -89,6 +89,10 @@ pricing-app/
 │   │   ├── layout/
 │   │   │   ├── MainLayout.tsx     # App shell with sidebar
 │   │   │   └── Sidebar.tsx        # Navigation sidebar
+│   │   ├── YearlyForecastInput.tsx     # Table UI for yearly forecast data
+│   │   ├── CreateScenarioModal.tsx     # Per-year vs consolidated scenario choice
+│   │   ├── ScenarioSelectionModal.tsx  # Multi-select scenarios for quote creation
+│   │   ├── CommitmentStrategyPicker.tsx # Peak/avg/specific year strategy picker
 │   │   └── ProtectedRoute.tsx     # Auth guard wrapper
 │   │
 │   ├── contexts/
@@ -100,7 +104,9 @@ pricing-app/
 │   ├── lib/
 │   │   ├── pricing.ts             # Pricing calculation algorithms
 │   │   ├── excel-parser.ts        # Excel file parsing for time-series
-│   │   ├── timeseries-pricing.ts  # Time-series pricing engine
+│   │   ├── timeseries-pricing.ts  # Time-series pricing engine + interpolation
+│   │   ├── scenario-generator.ts  # Forecast scenario generation (per-year/consolidated)
+│   │   ├── quote-generator.ts     # Quote generation (pay-per-use/commitment)
 │   │   ├── supabase.ts            # Supabase client & helpers
 │   │   ├── pdf.ts                 # PDF generation (jsPDF)
 │   │   └── utils.ts               # Formatting utilities
@@ -117,6 +123,8 @@ pricing-app/
 │       ├── SKUs.tsx               # Product catalog
 │       ├── ForecastEvaluator.tsx  # License forecasting
 │       ├── TimeSeriesForecast.tsx # Time-series import & pricing
+│       ├── YearlyForecastPage.tsx # Yearly forecast input & scenario creation
+│       ├── QuoteCompare.tsx       # Side-by-side quote comparison
 │       ├── Timeline.tsx           # Quote history
 │       ├── Settings.tsx           # User settings
 │       ├── Login.tsx              # Authentication
@@ -135,10 +143,13 @@ pricing-app/
 │   │   ├── 002_seed_data.sql          # Sample data
 │   │   ├── 003_perpetual_extensions.sql
 │   │   ├── 004_forecast_scenarios.sql # Forecast & versioning
-│   │   └── 005_timeseries_forecasts.sql # Time-series tables
-│   └── functions/
-│       └── calculate-pricing/
-│           └── index.ts               # Edge function
+│   │   ├── 005_timeseries_forecasts.sql # Time-series tables
+│   │   ├── 006_yearly_forecast_config.sql # Config column for yearly data
+│   │   └── 007_quote_type.sql         # Quote type (commitment/pay-per-use)
+│   ├── functions/
+│   │   └── calculate-pricing/
+│   │       └── index.ts               # Edge function
+│   └── config.toml                    # Edge function configuration
 │
 ├── tests/
 │   ├── setup.ts                   # Test configuration
@@ -811,6 +822,7 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     <Route path="/calculator" element={<Calculator />} />
     <Route path="/forecast" element={<ForecastEvaluator />} />
     <Route path="/forecast/timeseries" element={<TimeSeriesForecast />} />
+    <Route path="/forecast/yearly" element={<YearlyForecastPage />} />
     <Route path="/settings" element={<Settings />} />
 
     {/* Admin Routes */}
@@ -834,7 +846,8 @@ Main Navigation
 ├── Customers (/customers)
 ├── Calculator (/calculator)
 ├── Forecast (/forecast)
-└── Time-Series (/forecast/timeseries)
+├── Time-Series (/forecast/timeseries)
+└── Yearly Input (/forecast/yearly)
 
 Admin Section (collapsible)
 ├── Pricing Models (/admin/pricing-models)
@@ -866,6 +879,7 @@ Bottom Section
 | `time-phased-aggregation.test.ts` | 10 | Phase calculation, weighting |
 | `excel-parser.test.ts` | 23 | Date formats, KPI parsing, validation |
 | `timeseries-pricing.test.ts` | 25 | Period forecasts, commitment strategies |
+| `validation-calculations.test.ts` | 40 | GB/SIM, interpolation, aggregation, pipeline |
 
 **Running Tests:**
 

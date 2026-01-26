@@ -16,6 +16,7 @@ import Customers from '@/pages/Customers'
 import Calculator from '@/pages/Calculator'
 import ForecastEvaluator from '@/pages/ForecastEvaluator'
 import TimeSeriesForecast from '@/pages/TimeSeriesForecast'
+import YearlyForecastPage from '@/pages/YearlyForecastPage'
 import Settings from '@/pages/Settings'
 import Timeline from '@/pages/Timeline'
 
@@ -53,6 +54,7 @@ export default function App() {
           <Route path="/calculator" element={<Calculator />} />
           <Route path="/forecast" element={<ForecastEvaluator />} />
           <Route path="/forecast/timeseries" element={<TimeSeriesForecast />} />
+          <Route path="/forecast/yearly" element={<YearlyForecastPage />} />
           <Route path="/settings" element={<Settings />} />
 
           {/* Admin Routes */}

@@ -1,9 +1,9 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   Calculator, Settings2, TrendingUp, Server, Users, Database, Gauge,
-  Save, FolderOpen, Copy, Trash2, Plus, FileText, ChevronDown, Pencil, LineChart
+  Save, FolderOpen, Copy, Trash2, Plus, FileText, ChevronDown, Pencil, LineChart, CalendarRange, Layers
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -50,6 +50,11 @@ import {
 } from '@/components/ui/alert-dialog'
 import { useToast } from '@/hooks/use-toast'
 import { supabase } from '@/lib/supabase'
+import { ScenarioSelectionModal, type QuoteType } from '@/components/ScenarioSelectionModal'
+import {
+  generatePayPerUseQuote,
+  aggregateScenarioValues,
+} from '@/lib/quote-generator'
 import type { ForecastScenario, Customer } from '@/types/database'
 
 // Default configuration values from the Excel file
@@ -146,6 +151,10 @@ export default function ForecastEvaluator() {
   const [scenarioName, setScenarioName] = useState('')
   const [scenarioDescription, setScenarioDescription] = useState('')
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+
+  // State for scenario selection modal
+  const [scenarioSelectionModalOpen, setScenarioSelectionModalOpen] = useState(false)
+  const [isCreatingQuote, setIsCreatingQuote] = useState(false)
 
   // Fetch customers
   const { data: customers = [] } = useQuery({
@@ -411,6 +420,87 @@ export default function ForecastEvaluator() {
     setHasUnsavedChanges(false)
   }
 
+  // Open scenario selection modal
+  const handleOpenScenarioSelection = () => {
+    setScenarioSelectionModalOpen(true)
+  }
+
+  // Handle quote creation from scenario selection modal
+  const handleCreateQuoteFromScenarios = useCallback(
+    async (scenarioIds: string[], quoteType: QuoteType) => {
+      if (scenarioIds.length === 0) return
+
+      setIsCreatingQuote(true)
+
+      // Get selected scenarios
+      const selectedScenarios = scenarios.filter(s => scenarioIds.includes(s.id))
+
+      if (selectedScenarios.length === 0) {
+        toast({
+          title: 'Error',
+          description: 'No scenarios found',
+          variant: 'destructive',
+        })
+        setIsCreatingQuote(false)
+        return
+      }
+
+      const primaryScenario = selectedScenarios[0]
+      const scenarioName = selectedScenarios.length === 1
+        ? primaryScenario.name
+        : `${selectedScenarios.length} Scenarios`
+      const customerId = primaryScenario.customer_id || selectedCustomerId || undefined
+
+      try {
+        // For pay-per-use quotes, generate directly without navigating to the builder first
+        // This provides a more streamlined experience for pay-per-use quotes
+        if (quoteType === 'pay_per_use') {
+          const result = await generatePayPerUseQuote(selectedScenarios, customerId)
+          toast({
+            title: 'Pay-per-Use quote created',
+            description: `Created quote with ${result.itemCount} items (1-month term, no commitment).`,
+          })
+          navigate(`/quotes/${result.quoteId}`)
+        } else {
+          // For commitment quotes, still navigate to builder for term selection
+          const aggregatedValues = aggregateScenarioValues(selectedScenarios, 'peak')
+          const forecastResults = {
+            udr: aggregatedValues.udr,
+            pcs: aggregatedValues.pcs,
+            ccs: aggregatedValues.ccs,
+            scs: aggregatedValues.scs,
+            cos: aggregatedValues.cos,
+            throughputPeak: aggregatedValues.peakThroughput,
+            throughputAverage: aggregatedValues.avgThroughput,
+            dataVolumeGb: aggregatedValues.dataVolumeGb,
+          }
+
+          navigate('/quotes/new', {
+            state: {
+              fromForecast: true,
+              scenarioId: primaryScenario.id,
+              scenarioIds: scenarioIds,
+              customerId,
+              forecastResults,
+              scenarioName,
+              quoteType,
+            },
+          })
+        }
+      } catch (error: any) {
+        toast({
+          title: 'Error creating quote',
+          description: error.message,
+          variant: 'destructive',
+        })
+      } finally {
+        setScenarioSelectionModalOpen(false)
+        setIsCreatingQuote(false)
+      }
+    },
+    [scenarios, navigate, selectedCustomerId, toast]
+  )
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between">
@@ -423,11 +513,27 @@ export default function ForecastEvaluator() {
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
+            onClick={() => navigate('/forecast/yearly')}
+          >
+            <CalendarRange className="mr-2 h-4 w-4" />
+            Yearly Input
+          </Button>
+          <Button
+            variant="outline"
             onClick={() => navigate('/forecast/timeseries')}
           >
             <LineChart className="mr-2 h-4 w-4" />
             Time-Series Import
           </Button>
+          {scenarios.length > 0 && (
+            <Button
+              variant="outline"
+              onClick={handleOpenScenarioSelection}
+            >
+              <Layers className="mr-2 h-4 w-4" />
+              Select Scenarios
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={handleCreateQuote}
@@ -983,6 +1089,21 @@ export default function ForecastEvaluator() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Scenario Selection Modal for Quote Creation */}
+      <ScenarioSelectionModal
+        isOpen={scenarioSelectionModalOpen}
+        onClose={() => {
+          setScenarioSelectionModalOpen(false)
+          setIsCreatingQuote(false)
+        }}
+        scenarios={scenarios}
+        onCreateQuote={handleCreateQuoteFromScenarios}
+        preSelectedIds={selectedScenarioId ? [selectedScenarioId] : []}
+        isCreating={isCreatingQuote}
+        title="Select Scenarios for Quote"
+        description="Choose one or more scenarios to create a quote"
+      />
     </div>
   )
 }

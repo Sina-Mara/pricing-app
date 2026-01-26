@@ -14,6 +14,9 @@ An enterprise-grade pricing engine and quote management system for B2B SaaS lice
 - **Timeline Visualization** - Contract lifecycle Gantt view
 - **Forecast Evaluator** - License requirement calculator
 - **Time-Series Forecast** - Excel import with multi-period pricing (pay-per-use or fixed commitment)
+- **Yearly Forecast Input** - Direct entry of yearly SIMs & data usage with linear interpolation to monthly
+- **Scenario Generation** - Create per-year or consolidated forecast scenarios
+- **Quote Type Selection** - Pay-per-Use (no commitment) vs Commitment (term + volume discounts) with strategy picker
 
 ### Admin Configuration
 - **Pricing Models** - Configure algorithmic pricing (stepped, smooth, manual modes)
@@ -118,7 +121,9 @@ pricing-app/
 │   ├── lib/             # Utilities & business logic
 │   │   ├── pricing.ts            # Pricing algorithms
 │   │   ├── excel-parser.ts       # Excel file parsing
-│   │   ├── timeseries-pricing.ts # Time-series pricing engine
+│   │   ├── timeseries-pricing.ts # Time-series pricing + interpolation
+│   │   ├── scenario-generator.ts # Forecast scenario generation
+│   │   ├── quote-generator.ts    # Quote generation (PPU/commitment)
 │   │   ├── supabase.ts           # Supabase client
 │   │   └── utils.ts              # Formatting helpers
 │   ├── pages/           # Page components
@@ -126,10 +131,11 @@ pricing-app/
 │   │   └── admin/       # Admin pages
 │   └── types/           # TypeScript definitions
 ├── supabase/
-│   ├── migrations/      # Database schema (5 migrations)
-│   └── functions/       # Edge functions
+│   ├── migrations/      # Database schema (7 migrations)
+│   ├── functions/       # Edge functions
+│   └── config.toml      # Edge function configuration
 ├── tests/
-│   ├── pricing/         # Unit tests (95 tests)
+│   ├── pricing/         # Unit tests (135 tests)
 │   └── e2e/             # Playwright tests
 └── docs/                # Documentation
 ```
@@ -142,7 +148,7 @@ pricing-app/
 ## Testing
 
 ### Unit Tests
-The pricing algorithms are thoroughly tested with 95 test cases:
+The pricing algorithms are thoroughly tested with 135 test cases:
 
 ```bash
 npm run test:run
@@ -173,8 +179,10 @@ npm run test:e2e
 - `perpetual_config` - Perpetual licensing parameters
 - `forecast_sku_mappings` - KPI to SKU mappings for forecasting
 
-### Time-Series Tables
-- `timeseries_forecasts` - Forecast containers with configuration
+### Forecast & Scenario Tables
+- `forecast_scenarios` - Saved forecast scenarios (per-year or consolidated)
+- `forecast_sku_mappings` - KPI to SKU mappings for quote generation
+- `timeseries_forecasts` - Forecast containers with config (yearly granularity with JSON config)
 - `timeseries_forecast_data` - Per-period data points (SIMs, GB/SIM, calculated KPIs)
 
 ## Pricing Algorithm

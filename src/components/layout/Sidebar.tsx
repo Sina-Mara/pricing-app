@@ -19,6 +19,7 @@ import {
   FileStack,
   Map,
   LineChart,
+  CalendarRange,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -32,6 +33,7 @@ const navigation = [
   { name: 'Calculator', href: '/calculator', icon: Calculator },
   { name: 'Forecast', href: '/forecast', icon: TrendingUp },
   { name: 'Time-Series', href: '/forecast/timeseries', icon: LineChart },
+  { name: 'Yearly Input', href: '/forecast/yearly', icon: CalendarRange },
 ]
 
 const adminNavigation = [
