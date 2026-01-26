@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm run dev          # Start Vite dev server on http://localhost:5173
 npm run build        # TypeScript check + Vite production build
+npm run preview      # Preview production build locally
 npm run lint         # ESLint
 npm run test         # Unit tests in watch mode (Vitest)
 npm run test:run     # Unit tests single run
@@ -20,6 +21,8 @@ npx vitest run tests/pricing/volume-pricing.test.ts
 # Run tests matching a name pattern
 npx vitest run -t "smooth mode"
 ```
+
+Environment variables (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`) must be set in `.env` — see `.env.example`.
 
 ## Architecture
 
@@ -48,6 +51,8 @@ Final Price = Base Price × Volume Factor × Term Factor × Env Factor
 - `src/contexts/AuthContext.tsx` — Supabase auth state
 - `tests/pricing/` — Unit tests for pricing algorithms
 - `tests/e2e/` — Playwright E2E tests
+- `supabase/migrations/` — 7 SQL migrations (run in order, 001–007)
+- `supabase/functions/calculate-pricing/` — Supabase Edge Function (Deno runtime, not Node.js) for pricing calculations
 
 ### Forecast-to-Quote Flow
 
@@ -66,6 +71,10 @@ This is the primary multi-step workflow:
 - **Auth**: Supabase Auth (Email + Google OAuth) wrapped in `AuthContext`, guarded by `ProtectedRoute`
 - **Routing**: React Router DOM v6 with route state for passing data between pages
 
+### Quote Versioning
+
+Quotes support versioning via `version_group_id` (groups related versions) and `version_number` (incrementing integer). Creating a new version of a quote copies it with an incremented version number under the same group.
+
 ### Database
 
 **Supabase PostgreSQL** with 7 migrations in `supabase/migrations/`. Edge function in `supabase/functions/calculate-pricing/`.
@@ -80,6 +89,7 @@ This is the primary multi-step workflow:
 - `sku_category`: default | cas | cno | ccs
 - `environment_type`: production | reference
 - `quote_status`: draft | pending | sent | accepted | rejected | expired | ordered
+- `quote_type`: commitment | pay_per_use
 - `package_status`: new | ordered | existing | cancelled
 
 ## Code Conventions
@@ -96,3 +106,7 @@ This is the primary multi-step workflow:
 - `docs/SPECIFICATION.md` — Features and data model
 - `docs/IMPLEMENTATION.md` — Technical architecture and algorithms
 - `docs/PRICING-OVERVIEW.md` — Pricing algorithm explanation
+
+## Testing
+
+Unit tests use Vitest with jsdom + `@testing-library/react` for component tests. Test setup is in `tests/setup.ts`. E2E tests use Playwright with Chromium, auto-starting the dev server. Playwright takes screenshots on failure and traces on retry.

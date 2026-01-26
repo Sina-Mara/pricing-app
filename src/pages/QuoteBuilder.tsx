@@ -38,6 +38,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible'
 import { useToast } from '@/hooks/use-toast'
 import {
   Plus,
@@ -1469,108 +1470,115 @@ export default function QuoteBuilder() {
 
       {/* Summary Sidebar */}
       {!isNew && quote && (
-        <div className="w-80 border-l bg-card p-6">
-          <h3 className="mb-4 text-lg font-semibold">Quote Summary</h3>
+        <Collapsible defaultOpen className="border-l bg-card">
+          <div className="p-6 pb-0">
+            <CollapsibleTrigger className="flex w-full items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Quote Summary</h3>
+              <ChevronDown className="h-5 w-5 text-muted-foreground transition-transform [[data-state=closed]>&]:rotate-[-90deg]" />
+            </CollapsibleTrigger>
+          </div>
 
-          <div className="space-y-4">
-            <div className="rounded-lg bg-muted p-4">
-              <div className="text-sm text-muted-foreground">Monthly Total</div>
-              <div className="text-3xl font-bold flex items-center gap-2">
-                {formatCurrency(quote.total_monthly)}
-                {(calculating || pendingCalculation) && (
-                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          <CollapsibleContent className="px-6 pb-6 data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+            <div className="space-y-4">
+              <div className="rounded-lg bg-muted p-4">
+                <div className="text-sm text-muted-foreground">Monthly Total</div>
+                <div className="text-3xl font-bold flex items-center gap-2">
+                  {formatCurrency(quote.total_monthly)}
+                  {(calculating || pendingCalculation) && (
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-muted p-4">
+                <div className="text-sm text-muted-foreground">Annual Total</div>
+                <div className="text-2xl font-bold">{formatCurrency(quote.total_annual)}</div>
+              </div>
+
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Quote Type</span>
+                  <Badge
+                    variant={formData.quote_type === 'commitment' ? 'default' : 'secondary'}
+                    className={
+                      formData.quote_type === 'commitment'
+                        ? 'bg-blue-600'
+                        : 'bg-amber-600 text-white'
+                    }
+                  >
+                    {formData.quote_type === 'commitment' ? (
+                      <>
+                        <Lock className="mr-1 h-3 w-3" />
+                        Commitment
+                      </>
+                    ) : (
+                      <>
+                        <Repeat className="mr-1 h-3 w-3" />
+                        Pay-per-Use
+                      </>
+                    )}
+                  </Badge>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Packages</span>
+                  <span>{quote.quote_packages.length}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Line Items</span>
+                  <span>
+                    {quote.quote_packages.reduce((sum, pkg) => sum + (pkg.quote_items?.length || 0), 0)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Status</span>
+                  <Badge className={getStatusColor(quote.status)}>{quote.status}</Badge>
+                </div>
+                {quote.version_number && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Version</span>
+                    <span>v{quote.version_number}</span>
+                  </div>
                 )}
               </div>
-            </div>
 
-            <div className="rounded-lg bg-muted p-4">
-              <div className="text-sm text-muted-foreground">Annual Total</div>
-              <div className="text-2xl font-bold">{formatCurrency(quote.total_annual)}</div>
-            </div>
+              {/* Quick Actions */}
+              <div className="pt-4 border-t space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="autoCalc" className="text-sm">Auto-calculate</Label>
+                  <Switch
+                    id="autoCalc"
+                    checked={autoCalculate}
+                    onCheckedChange={setAutoCalculate}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {autoCalculate
+                    ? 'Prices update automatically as you edit'
+                    : 'Click Calculate to update prices'}
+                </p>
+                {pendingCalculation && (
+                  <div className="text-xs text-amber-600 flex items-center gap-1">
+                    <div className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                    Calculating...
+                  </div>
+                )}
+              </div>
 
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Quote Type</span>
-                <Badge
-                  variant={formData.quote_type === 'commitment' ? 'default' : 'secondary'}
-                  className={
-                    formData.quote_type === 'commitment'
-                      ? 'bg-blue-600'
-                      : 'bg-amber-600 text-white'
-                  }
+              {/* Quick Version Action */}
+              <div className="pt-4 border-t">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => setShowVersionDialog(true)}
                 >
-                  {formData.quote_type === 'commitment' ? (
-                    <>
-                      <Lock className="mr-1 h-3 w-3" />
-                      Commitment
-                    </>
-                  ) : (
-                    <>
-                      <Repeat className="mr-1 h-3 w-3" />
-                      Pay-per-Use
-                    </>
-                  )}
-                </Badge>
+                  <Copy className="mr-2 h-4 w-4" />
+                  Create New Version
+                </Button>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Packages</span>
-                <span>{quote.quote_packages.length}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Line Items</span>
-                <span>
-                  {quote.quote_packages.reduce((sum, pkg) => sum + (pkg.quote_items?.length || 0), 0)}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Status</span>
-                <Badge className={getStatusColor(quote.status)}>{quote.status}</Badge>
-              </div>
-              {quote.version_number && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Version</span>
-                  <span>v{quote.version_number}</span>
-                </div>
-              )}
             </div>
-
-            {/* Quick Actions */}
-            <div className="pt-4 border-t space-y-3">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="autoCalc" className="text-sm">Auto-calculate</Label>
-                <Switch
-                  id="autoCalc"
-                  checked={autoCalculate}
-                  onCheckedChange={setAutoCalculate}
-                />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {autoCalculate
-                  ? 'Prices update automatically as you edit'
-                  : 'Click Calculate to update prices'}
-              </p>
-              {pendingCalculation && (
-                <div className="text-xs text-amber-600 flex items-center gap-1">
-                  <div className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
-                  Calculating...
-                </div>
-              )}
-            </div>
-
-            {/* Quick Version Action */}
-            <div className="pt-4 border-t">
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full"
-                onClick={() => setShowVersionDialog(true)}
-              >
-                <Copy className="mr-2 h-4 w-4" />
-                Create New Version
-              </Button>
-            </div>
-          </div>
-        </div>
+          </CollapsibleContent>
+        </Collapsible>
       )}
 
       {/* Add Package Dialog */}
