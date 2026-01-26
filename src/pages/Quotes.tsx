@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -27,9 +27,21 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Plus, Search, FileText, Edit, GitBranch, MoreHorizontal, Copy, ChevronRight } from 'lucide-react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { useToast } from '@/hooks/use-toast'
+import { Plus, Search, FileText, Edit, GitBranch, MoreHorizontal, Copy, ChevronRight, Trash2 } from 'lucide-react'
 import { formatCurrency, formatDate, getStatusColor } from '@/lib/utils'
 import type { QuoteStatus } from '@/types/database'
 
@@ -64,9 +76,12 @@ const statusOptions: { value: QuoteStatus | 'all'; label: string }[] = [
 
 export default function Quotes() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [groupVersions, setGroupVersions] = useState(false)
+  const [deleteQuoteId, setDeleteQuoteId] = useState<string | null>(null)
 
   const { data: quotes, isLoading } = useQuery({
     queryKey: ['quotes-with-versions'],
@@ -166,6 +181,33 @@ export default function Quotes() {
     return quotes?.filter(q => q.version_group_id === quote.version_group_id).length || 0
   }
 
+  // Delete quote mutation
+  const deleteQuote = useMutation({
+    mutationFn: async (quoteId: string) => {
+      const { error } = await supabase
+        .from('quotes')
+        .delete()
+        .eq('id', quoteId)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['quotes-with-versions'] })
+      toast({ title: 'Quote deleted' })
+      setDeleteQuoteId(null)
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Failed to delete quote',
+        description: error.message,
+        variant: 'destructive',
+      })
+    },
+  })
+
+  const deleteTarget = deleteQuoteId
+    ? quotes?.find(q => q.id === deleteQuoteId)
+    : null
+
   const renderQuoteRow = (quote: QuoteWithVersion, isSubRow = false) => {
     const versionCount = getVersionCount(quote)
 
@@ -234,31 +276,41 @@ export default function Quotes() {
                 <Edit className="h-4 w-4" />
               </Link>
             </Button>
-            {versionCount > 1 && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon">
-                    <MoreHorizontal className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    onClick={() => navigate(`/quotes/compare?group=${quote.version_group_id}`)}
-                  >
-                    <GitBranch className="mr-2 h-4 w-4" />
-                    Compare Versions
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => navigate(`/quotes/${quote.id}`, {
-                      state: { openVersionDialog: true }
-                    })}
-                  >
-                    <Copy className="mr-2 h-4 w-4" />
-                    Create New Version
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {versionCount > 1 && (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => navigate(`/quotes/compare?group=${quote.version_group_id}`)}
+                    >
+                      <GitBranch className="mr-2 h-4 w-4" />
+                      Compare Versions
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => navigate(`/quotes/${quote.id}`, {
+                        state: { openVersionDialog: true }
+                      })}
+                    >
+                      <Copy className="mr-2 h-4 w-4" />
+                      Create New Version
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onClick={() => setDeleteQuoteId(quote.id)}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </TableCell>
       </TableRow>
@@ -421,6 +473,35 @@ export default function Quotes() {
           )}
         </CardContent>
       </Card>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={!!deleteQuoteId} onOpenChange={(open) => !open && setDeleteQuoteId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Quote</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete quote{' '}
+              <span className="font-medium text-foreground">
+                {deleteTarget?.quote_number}
+              </span>
+              {deleteTarget?.title && (
+                <> ({deleteTarget.title})</>
+              )}
+              ? This will permanently remove the quote and all its packages and line items. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteQuote.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteQuote.isPending}
+              onClick={() => deleteQuoteId && deleteQuote.mutate(deleteQuoteId)}
+            >
+              {deleteQuote.isPending ? 'Deleting...' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
