@@ -89,6 +89,7 @@ This is the primary multi-step workflow:
 - Styling: Tailwind CSS with dark mode (class-based), custom HSL color variables
 - Components: PascalCase filenames, one component per file
 - Business logic lives in `src/lib/`, not in components
+- **GB/SIM convention**: The DB column `forecast_scenarios.gb_per_sim` stores **monthly** values. The UI displays **yearly** GB/SIM everywhere (labeled "GB/SIM/yr"). Convert with `× 12` when loading from DB and `/ 12` when saving to DB. The `scenario-generator.ts` functions (`calculateMonthlyGbPerSim`, `generatePerYearScenarios`, etc.) produce monthly values for DB storage.
 
 ## Documentation
 

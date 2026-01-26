@@ -81,7 +81,7 @@ interface ForecastResults {
 
 function calculateForecast(
   totalSims: number,
-  gbPerSim: number,
+  gbPerSimYearly: number,
   config: typeof DEFAULT_CONFIG
 ): ForecastResults {
   // UDR = Total SIMs
@@ -99,8 +99,9 @@ function calculateForecast(
   // CoS = Concurrent Sessions (same as SCS for gateway)
   const cos = scs
 
-  // Data Volume = Total SIMs × GB/SIM
-  const dataVolumeGb = totalSims * gbPerSim
+  // Data Volume = Total SIMs × GB/SIM/month (convert yearly to monthly)
+  const gbPerSimMonthly = gbPerSimYearly / 12
+  const dataVolumeGb = totalSims * gbPerSimMonthly
 
   // Throughput Average = DataVolume × 8 / (30 × 8 × 3600) in Gbit/s
   const throughputAverage = (dataVolumeGb * config.gbitPerGb) /
@@ -138,7 +139,7 @@ export default function ForecastEvaluator() {
 
   // State for inputs
   const [totalSims, setTotalSims] = useState<number>(100000)
-  const [gbPerSim, setGbPerSim] = useState<number>(1.9)
+  const [gbPerSim, setGbPerSim] = useState<number>(22.8)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [config, setConfig] = useState(DEFAULT_CONFIG)
 
@@ -203,7 +204,7 @@ export default function ForecastEvaluator() {
   useEffect(() => {
     if (selectedScenario) {
       setTotalSims(selectedScenario.total_sims)
-      setGbPerSim(selectedScenario.gb_per_sim)
+      setGbPerSim(selectedScenario.gb_per_sim * 12)
       setConfig({
         ...DEFAULT_CONFIG,
         takeRatePcsUdr: selectedScenario.take_rate_pcs_udr,
@@ -244,7 +245,7 @@ export default function ForecastEvaluator() {
         name: scenarioName,
         description: scenarioDescription || null,
         total_sims: totalSims,
-        gb_per_sim: gbPerSim,
+        gb_per_sim: gbPerSim / 12,
         take_rate_pcs_udr: config.takeRatePcsUdr,
         take_rate_ccs_udr: config.takeRateCcsUdr,
         take_rate_scs_pcs: config.takeRateScsPcs,
@@ -415,7 +416,7 @@ export default function ForecastEvaluator() {
     setScenarioName('')
     setScenarioDescription('')
     setTotalSims(100000)
-    setGbPerSim(1.9)
+    setGbPerSim(22.8)
     setConfig(DEFAULT_CONFIG)
     setHasUnsavedChanges(false)
   }
@@ -691,7 +692,7 @@ export default function ForecastEvaluator() {
                 </p>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="gbPerSim">Data Usage (GB/SIM)</Label>
+                <Label htmlFor="gbPerSim">Data Usage (GB/SIM/year)</Label>
                 <Input
                   id="gbPerSim"
                   type="number"
@@ -701,7 +702,7 @@ export default function ForecastEvaluator() {
                   min={0}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Monthly data usage per SIM in GB
+                  Yearly data usage per SIM in GB
                 </p>
               </div>
             </div>
@@ -920,7 +921,7 @@ export default function ForecastEvaluator() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Data per SIM</span>
-                  <span className="font-medium">{formatNumber(gbPerSim, 1)} GB/month</span>
+                  <span className="font-medium">{formatNumber(gbPerSim, 1)} GB/year</span>
                 </div>
                 <Separator className="my-2" />
                 <div className="flex justify-between">
@@ -953,7 +954,7 @@ export default function ForecastEvaluator() {
               <h4 className="font-medium">TISP-LGW</h4>
               <ul className="space-y-1 text-muted-foreground">
                 <li><code className="text-xs bg-muted px-1 py-0.5 rounded">CoS</code> = PCS × Take Rate (SCS/PCS)</li>
-                <li><code className="text-xs bg-muted px-1 py-0.5 rounded">Avg Throughput</code> = (SIMs × GB/SIM × 8) / (Days × Hours × 3600)</li>
+                <li><code className="text-xs bg-muted px-1 py-0.5 rounded">Avg Throughput</code> = (SIMs × GB/SIM/yr / 12 × 8) / (Days × Hours × 3600)</li>
                 <li><code className="text-xs bg-muted px-1 py-0.5 rounded">Peak Throughput</code> = Avg × Peak/Avg Ratio</li>
               </ul>
             </div>

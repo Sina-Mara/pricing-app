@@ -325,7 +325,7 @@ export function YearlyForecastInput({
                   <TableHead className="w-[120px]">Year</TableHead>
                   <TableHead className="w-[180px]">End-of-Year SIMs</TableHead>
                   <TableHead className="w-[180px]">Total Data Usage (GB)</TableHead>
-                  <TableHead className="w-[140px]">GB/SIM</TableHead>
+                  <TableHead className="w-[140px]">GB/SIM/yr</TableHead>
                   <TableHead className="w-[80px]"></TableHead>
                 </TableRow>
               </TableHeader>

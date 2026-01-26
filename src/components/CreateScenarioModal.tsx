@@ -212,7 +212,7 @@ export function CreateScenarioModal({
         type: 'consolidated',
         consolidationStrategy,
         customValues: consolidationStrategy === 'custom'
-          ? { totalSims: customSims, gbPerSim: customGbPerSim }
+          ? { totalSims: customSims, gbPerSim: customGbPerSim / 12 }
           : undefined,
         scenarioNames: [consolidatedName],
         forecastId,
@@ -295,7 +295,7 @@ export function CreateScenarioModal({
               <span className="ml-2 font-medium">{formatNumber(values.sims)}</span>
             </div>
             <div>
-              <span className="text-muted-foreground">GB/SIM:</span>
+              <span className="text-muted-foreground">GB/SIM/yr:</span>
               <span className="ml-2 font-medium">{formatNumber(values.gbPerSim, 2)}</span>
             </div>
           </div>
@@ -502,7 +502,7 @@ export function CreateScenarioModal({
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="customGbPerSim">GB/SIM (Monthly)</Label>
+                    <Label htmlFor="customGbPerSim">GB/SIM (Yearly)</Label>
                     <Input
                       id="customGbPerSim"
                       type="number"

@@ -161,9 +161,9 @@ function ScenarioRow({ scenario, isSelected, onToggle }: ScenarioRowProps) {
         <div className="text-right">
           <div className="flex items-center gap-1 text-muted-foreground">
             <Database className="h-3.5 w-3.5" />
-            <span>GB/SIM</span>
+            <span>GB/SIM/yr</span>
           </div>
-          <div className="font-medium">{formatNumber(scenario.gb_per_sim, 2)}</div>
+          <div className="font-medium">{formatNumber((scenario.gb_per_sim ?? 0) * 12, 2)}</div>
         </div>
         <div className="text-right">
           <div className="flex items-center gap-1 text-muted-foreground">
