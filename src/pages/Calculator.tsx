@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { formatCurrency, formatPercent } from '@/lib/utils'
+import { applyBaseUsageRatio, CAS_REFERENCE_BASE_RATIO } from '@/lib/pricing'
 import type { Sku, CalculatePricingResponse } from '@/types/database'
 import { Calculator as CalcIcon } from 'lucide-react'
 
@@ -21,6 +22,7 @@ export default function Calculator() {
   const [quantity, setQuantity] = useState<number>(1)
   const [termMonths, setTermMonths] = useState<number>(12)
   const [environment, setEnvironment] = useState<'production' | 'reference'>('production')
+  const [baseUsageRatio, setBaseUsageRatio] = useState<number>(0.60)
   const [result, setResult] = useState<CalculatePricingResponse | null>(null)
   const [calculating, setCalculating] = useState(false)
 
@@ -66,7 +68,28 @@ export default function Calculator() {
   }
 
   const selectedSkuData = skus?.find(s => s.id === selectedSku)
+  const isCasSku = selectedSkuData?.category === 'cas'
   const pricingResult = result?.items?.[0]
+
+  // Apply base/usage ratio adjustment client-side for CAS SKUs
+  const adjustedResult = pricingResult && isCasSku && baseUsageRatio !== CAS_REFERENCE_BASE_RATIO
+    ? (() => {
+        const { adjustedPrice: adjUnitPrice, ratioFactor } = applyBaseUsageRatio(
+          pricingResult.unit_price,
+          selectedSkuData?.is_base_charge ?? true,
+          'cas',
+          baseUsageRatio
+        )
+        const factor = ratioFactor ?? 1
+        return {
+          ...pricingResult,
+          unit_price: adjUnitPrice,
+          monthly_total: pricingResult.monthly_total * factor,
+          annual_total: pricingResult.annual_total * factor,
+          ratioFactor: factor,
+        }
+      })()
+    : pricingResult ? { ...pricingResult, ratioFactor: null as number | null } : null
 
   return (
     <div className="p-6">
@@ -153,6 +176,32 @@ export default function Calculator() {
               </Select>
             </div>
 
+            {isCasSku && (
+              <div className="space-y-2">
+                <Label>Base / Usage Ratio</Label>
+                <Select
+                  value={baseUsageRatio.toString()}
+                  onValueChange={(v) => setBaseUsageRatio(parseFloat(v))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0.50">50 / 50</SelectItem>
+                    <SelectItem value="0.55">55 / 45</SelectItem>
+                    <SelectItem value="0.60">60 / 40 (default)</SelectItem>
+                    <SelectItem value="0.65">65 / 35</SelectItem>
+                    <SelectItem value="0.70">70 / 30</SelectItem>
+                    <SelectItem value="0.75">75 / 25</SelectItem>
+                    <SelectItem value="0.80">80 / 20</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-sm text-muted-foreground">
+                  Adjusts the split between base charge and usage pricing for CAS SKUs
+                </p>
+              </div>
+            )}
+
             <Button
               onClick={handleCalculate}
               disabled={!selectedSku || calculating}
@@ -177,20 +226,20 @@ export default function Calculator() {
             <CardDescription>Calculated pricing breakdown</CardDescription>
           </CardHeader>
           <CardContent>
-            {pricingResult ? (
+            {adjustedResult ? (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="rounded-lg bg-muted p-4">
                     <p className="text-sm text-muted-foreground">List Price</p>
                     <p className="text-2xl font-bold">
-                      {formatCurrency(pricingResult.list_price)}
+                      {formatCurrency(adjustedResult.list_price)}
                     </p>
                     <p className="text-xs text-muted-foreground">per unit</p>
                   </div>
                   <div className="rounded-lg bg-muted p-4">
                     <p className="text-sm text-muted-foreground">Final Unit Price</p>
                     <p className="text-2xl font-bold text-primary">
-                      {formatCurrency(pricingResult.unit_price)}
+                      {formatCurrency(adjustedResult.unit_price)}
                     </p>
                     <p className="text-xs text-muted-foreground">per unit</p>
                   </div>
@@ -202,26 +251,37 @@ export default function Calculator() {
                     <div>
                       <p className="text-muted-foreground">Volume</p>
                       <p className="font-medium text-green-600">
-                        -{formatPercent(pricingResult.volume_discount_pct)}
+                        -{formatPercent(adjustedResult.volume_discount_pct)}
                       </p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">Term</p>
                       <p className="font-medium text-green-600">
-                        -{formatPercent(pricingResult.term_discount_pct)}
+                        -{formatPercent(adjustedResult.term_discount_pct)}
                       </p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">Env Factor</p>
                       <p className="font-medium">
-                        {pricingResult.env_factor}x
+                        {adjustedResult.env_factor}x
                       </p>
                     </div>
                   </div>
+                  {adjustedResult.ratioFactor !== null && (
+                    <div className="border-t pt-2">
+                      <p className="text-muted-foreground">Ratio Factor</p>
+                      <p className="text-lg font-bold text-blue-600">
+                        {adjustedResult.ratioFactor.toFixed(4)}x
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {Math.round(baseUsageRatio * 100)}/{Math.round((1 - baseUsageRatio) * 100)} base/usage split
+                      </p>
+                    </div>
+                  )}
                   <div className="border-t pt-2">
                     <p className="text-muted-foreground">Total Discount</p>
                     <p className="text-lg font-bold text-green-600">
-                      -{formatPercent(pricingResult.total_discount_pct)}
+                      -{formatPercent(adjustedResult.total_discount_pct)}
                     </p>
                   </div>
                 </div>
@@ -231,13 +291,13 @@ export default function Calculator() {
                     <div>
                       <p className="text-sm text-muted-foreground">Monthly Total</p>
                       <p className="text-2xl font-bold">
-                        {formatCurrency(pricingResult.monthly_total)}
+                        {formatCurrency(adjustedResult.monthly_total)}
                       </p>
                     </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Annual Total</p>
                       <p className="text-2xl font-bold">
-                        {formatCurrency(pricingResult.annual_total)}
+                        {formatCurrency(adjustedResult.annual_total)}
                       </p>
                     </div>
                   </div>

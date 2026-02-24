@@ -61,6 +61,7 @@ interface QuoteWithVersion {
   version_group_id: string | null
   version_number: number | null
   version_name: string | null
+  base_usage_ratio: number
 }
 
 const statusOptions: { value: QuoteStatus | 'all'; label: string }[] = [
@@ -100,6 +101,7 @@ export default function Quotes() {
           version_group_id,
           version_number,
           version_name,
+          base_usage_ratio,
           customer:customers(name, company)
         `)
         .order('created_at', { ascending: false })
@@ -252,9 +254,16 @@ export default function Quotes() {
           {quote.title || '-'}
         </TableCell>
         <TableCell>
-          <Badge className={getStatusColor(quote.status)}>
-            {quote.status}
-          </Badge>
+          <div className="flex items-center gap-1.5">
+            <Badge className={getStatusColor(quote.status)}>
+              {quote.status}
+            </Badge>
+            {quote.base_usage_ratio !== undefined && quote.base_usage_ratio !== 0.60 && (
+              <Badge variant="outline" className="text-xs font-normal">
+                Ratio: {Math.round(quote.base_usage_ratio * 100)}/{Math.round((1 - quote.base_usage_ratio) * 100)}
+              </Badge>
+            )}
+          </div>
         </TableCell>
         <TableCell>{quote.package_count}</TableCell>
         <TableCell className="text-right font-medium">
@@ -270,7 +279,7 @@ export default function Quotes() {
           {formatDate(quote.created_at)}
         </TableCell>
         <TableCell>
-          <div className="flex gap-1">
+          <div className="flex gap-2">
             <Button variant="ghost" size="icon" asChild>
               <Link to={`/quotes/${quote.id}`}>
                 <Edit className="h-4 w-4" />

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase, invokeEdgeFunction } from '@/lib/supabase'
@@ -277,6 +277,7 @@ export default function QuoteBuilder() {
     quote_type: (locationState?.quoteType || 'commitment') as QuoteType,
     valid_until: '',
     use_aggregated_pricing: true,
+    base_usage_ratio: 0.60,
     notes: '',
   })
 
@@ -290,12 +291,21 @@ export default function QuoteBuilder() {
         quote_type: quote.quote_type || 'commitment',
         valid_until: quote.valid_until || '',
         use_aggregated_pricing: quote.use_aggregated_pricing,
+        base_usage_ratio: quote.base_usage_ratio ?? 0.60,
         notes: quote.notes || '',
       })
       // Expand all packages by default
       setExpandedPackages(new Set(quote.quote_packages.map(p => p.id)))
     }
   }, [quote])
+
+  // Check if quote has any CAS category SKUs (for base/usage ratio control)
+  const hasCasSkus = useMemo(() => {
+    if (!quote?.quote_packages) return false
+    return quote.quote_packages.some(pkg =>
+      pkg.quote_items?.some(item => item.sku?.category === 'cas')
+    )
+  }, [quote?.quote_packages])
 
   // Pre-fill from forecast when coming from Forecast Evaluator
   useEffect(() => {
@@ -379,6 +389,7 @@ export default function QuoteBuilder() {
           quote_type: formData.quote_type,
           valid_until: formData.valid_until || null,
           use_aggregated_pricing: useAggregatedPricing,
+          base_usage_ratio: formData.base_usage_ratio,
           notes: formData.notes || null,
           version_group_id: versionGroupId,
           version_number: 1,
@@ -522,6 +533,7 @@ export default function QuoteBuilder() {
           quote_type: formData.quote_type,
           valid_until: formData.valid_until || null,
           use_aggregated_pricing: formData.use_aggregated_pricing,
+          base_usage_ratio: formData.base_usage_ratio,
           notes: formData.notes || null,
         })
         .eq('id', id)
@@ -563,6 +575,7 @@ export default function QuoteBuilder() {
           quote_type: quote.quote_type || 'commitment',
           valid_until: quote.valid_until,
           use_aggregated_pricing: quote.use_aggregated_pricing,
+          base_usage_ratio: quote.base_usage_ratio ?? 0.60,
           notes: quote.notes,
           version_group_id: versionGroupId,
           version_number: nextVersionNumber,
@@ -1098,6 +1111,55 @@ export default function QuoteBuilder() {
                 />
                 <Label>Use aggregated pricing (combine quantities across packages for volume discounts)</Label>
               </div>
+
+              {/* Base/Usage Ratio Slider (visible when quote has CAS SKUs) */}
+              {hasCasSkus && (
+                <div className="col-span-full space-y-2">
+                  <label className="text-sm font-medium">Base/Usage Ratio (CAS)</label>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground w-12">Base</span>
+                    <input
+                      type="range"
+                      min="1"
+                      max="99"
+                      step="1"
+                      value={Math.round(formData.base_usage_ratio * 100)}
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        base_usage_ratio: parseInt(e.target.value) / 100
+                      }))}
+                      className="flex-1"
+                    />
+                    <span className="text-xs text-muted-foreground w-12 text-right">Usage</span>
+                  </div>
+                  <div className="text-center text-sm font-mono">
+                    {Math.round(formData.base_usage_ratio * 100)}% Base / {Math.round((1 - formData.base_usage_ratio) * 100)}% Usage
+                  </div>
+                  <div className="flex gap-2 justify-center">
+                    <button
+                      type="button"
+                      className={`text-xs px-2 py-1 rounded border ${Math.round(formData.base_usage_ratio * 100) === 80 ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
+                      onClick={() => setFormData(prev => ({ ...prev, base_usage_ratio: 0.80 }))}
+                    >
+                      Commitment (80/20)
+                    </button>
+                    <button
+                      type="button"
+                      className={`text-xs px-2 py-1 rounded border ${Math.round(formData.base_usage_ratio * 100) === 60 ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
+                      onClick={() => setFormData(prev => ({ ...prev, base_usage_ratio: 0.60 }))}
+                    >
+                      Standard (60/40)
+                    </button>
+                    <button
+                      type="button"
+                      className={`text-xs px-2 py-1 rounded border ${Math.round(formData.base_usage_ratio * 100) === 10 ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
+                      onClick={() => setFormData(prev => ({ ...prev, base_usage_ratio: 0.10 }))}
+                    >
+                      Pay-per-use (10/90)
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -1356,6 +1418,7 @@ export default function QuoteBuilder() {
                             <TableHead className="w-32">Environment</TableHead>
                             <TableHead className="text-right">List Price</TableHead>
                             <TableHead className="text-right">Discount</TableHead>
+                            <TableHead className="text-right">Ratio</TableHead>
                             <TableHead className="text-right">Unit Price</TableHead>
                             <TableHead className="text-right">Monthly</TableHead>
                             <TableHead className="w-12"></TableHead>
@@ -1411,6 +1474,13 @@ export default function QuoteBuilder() {
                               </TableCell>
                               <TableCell className="text-right text-green-600">
                                 {item.total_discount_pct ? `-${formatPercent(item.total_discount_pct)}` : '-'}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {item.ratio_factor != null && item.ratio_factor !== 1 ? (
+                                  <span className="text-xs text-blue-600 font-mono">
+                                    x{item.ratio_factor.toFixed(2)}
+                                  </span>
+                                ) : '-'}
                               </TableCell>
                               <TableCell className="text-right font-medium">
                                 {item.unit_price ? formatCurrency(item.unit_price) : '-'}

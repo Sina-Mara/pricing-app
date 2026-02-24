@@ -393,3 +393,51 @@ export function calculateTimeWeightedPrices(
 
   return weightedPrices;
 }
+
+// ============================================================================
+// BASE/USAGE RATIO FOR CAS PRICING
+// ============================================================================
+
+// Reference ratio at which DB prices were seeded (60% base / 40% usage)
+export const CAS_REFERENCE_BASE_RATIO = 0.60;
+export const CAS_REFERENCE_USAGE_RATIO = 0.40;
+
+/**
+ * Calculate the multiplier for base charge SKUs given a base/usage ratio.
+ * At R=0.60 (reference), returns 1.0 (no change).
+ */
+export function calculateBaseRatioFactor(ratio: number): number {
+  return round4(ratio / CAS_REFERENCE_BASE_RATIO);
+}
+
+/**
+ * Calculate the multiplier for usage SKUs given a base/usage ratio.
+ * At R=0.60 (reference), returns 1.0 (no change).
+ */
+export function calculateUsageRatioFactor(ratio: number): number {
+  return round4((1 - ratio) / CAS_REFERENCE_USAGE_RATIO);
+}
+
+/**
+ * Apply the base/usage ratio to a price. Only affects CAS category SKUs.
+ * Returns the adjusted price and the ratio factor applied (null for non-CAS).
+ */
+export function applyBaseUsageRatio(
+  price: number,
+  isBaseCharge: boolean,
+  category: string,
+  ratio: number
+): { adjustedPrice: number; ratioFactor: number | null } {
+  if (category !== 'cas') {
+    return { adjustedPrice: price, ratioFactor: null };
+  }
+
+  const factor = isBaseCharge
+    ? calculateBaseRatioFactor(ratio)
+    : calculateUsageRatioFactor(ratio);
+
+  return {
+    adjustedPrice: round4(price * factor),
+    ratioFactor: factor,
+  };
+}

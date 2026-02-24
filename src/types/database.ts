@@ -95,6 +95,7 @@ export interface Quote {
   notes: string | null
   valid_until: string | null
   use_aggregated_pricing: boolean
+  base_usage_ratio: number
   total_monthly: number
   total_annual: number
   created_by: string | null
@@ -142,6 +143,7 @@ export interface QuoteItem {
   annual_total: number | null
   aggregated_qty: number | null
   pricing_phases: object | null
+  ratio_factor: number | null
   sort_order: number
   created_at: string
   updated_at: string
@@ -195,6 +197,7 @@ export interface PricingResult {
   annual_total: number
   aggregated_qty: number | null
   pricing_phases: object | null
+  ratio_factor: number | null
 }
 
 export interface CalculatePricingResponse {

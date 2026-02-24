@@ -426,6 +426,28 @@ export default function QuoteCompare() {
                       </TableCell>
                     ))}
                   </TableRow>
+                  {/* Show base/usage ratio row if it differs between any quotes */}
+                  {selectedQuotes.some(q => q.base_usage_ratio !== selectedQuotes[0].base_usage_ratio) && (
+                    <TableRow>
+                      <TableCell className="font-medium">Base / Usage Ratio</TableCell>
+                      {selectedQuotes.map(q => {
+                        const baseRatio = q.base_usage_ratio ?? 0.60
+                        const basePct = Math.round(baseRatio * 100)
+                        const usagePct = Math.round((1 - baseRatio) * 100)
+                        const isDifferent = baseRatio !== selectedQuotes[0].base_usage_ratio
+                        return (
+                          <TableCell
+                            key={q.id}
+                            className={`text-center ${isDifferent ? 'bg-amber-50 dark:bg-amber-950 font-medium' : ''}`}
+                          >
+                            <Badge variant={isDifferent ? 'default' : 'outline'}>
+                              Ratio: {basePct}/{usagePct}
+                            </Badge>
+                          </TableCell>
+                        )
+                      })}
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             </CardContent>

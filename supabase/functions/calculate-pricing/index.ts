@@ -82,6 +82,7 @@ interface PricingResult {
   annual_total: number;
   aggregated_qty: number | null;
   pricing_phases: object | null;
+  ratio_factor: number | null;
 }
 
 interface PricingContext {
@@ -158,6 +159,10 @@ function round4(value: number): number {
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
+
+// Reference ratio at which DB prices were seeded (60% base / 40% usage)
+const CAS_REFERENCE_BASE_RATIO = 0.60;
+const CAS_REFERENCE_USAGE_RATIO = 0.40;
 
 // ============================================================================
 // TERM FACTOR CALCULATION (with interpolation)
@@ -435,6 +440,7 @@ function calculateItemPricing(
     annual_total: 0,
     aggregated_qty: aggregatedQty ?? null,
     pricing_phases: null,
+    ratio_factor: null,
   };
 
   if (sku.is_base_charge) {
@@ -689,7 +695,8 @@ function calculateItemPricingWithPhases(
   ctx: PricingContext,
   item: QuoteItem,
   packageTermMonths: number,
-  weightedPrices: Map<string, Map<string, WeightedPriceData>> | null
+  weightedPrices: Map<string, Map<string, WeightedPriceData>> | null,
+  baseUsageRatio: number = 0.60
 ): PricingResult {
   const sku = ctx.skus.get(item.sku_id);
   if (!sku) {
@@ -713,6 +720,7 @@ function calculateItemPricingWithPhases(
     annual_total: 0,
     aggregated_qty: null,
     pricing_phases: null,
+    ratio_factor: null,
   };
 
   if (sku.is_base_charge) {
@@ -728,6 +736,15 @@ function calculateItemPricingWithPhases(
     if (listBaseMrc > 0) {
       result.term_discount_pct = round2((1 - baseMrc / listBaseMrc) * 100);
       result.total_discount_pct = result.term_discount_pct;
+    }
+
+    // Apply base/usage ratio for CAS SKUs
+    if (sku.category === 'cas') {
+      const ratioFactor = round4(baseUsageRatio / CAS_REFERENCE_BASE_RATIO);
+      result.base_charge = round2(result.base_charge * ratioFactor);
+      result.monthly_total = result.base_charge;
+      result.unit_price = result.base_charge;
+      result.ratio_factor = ratioFactor;
     }
   } else {
     // Usage-based pricing
@@ -781,6 +798,17 @@ function calculateItemPricingWithPhases(
     // Totals
     result.usage_total = round2(result.unit_price * qty);
     result.monthly_total = result.usage_total;
+
+    // Apply base/usage ratio for CAS SKUs
+    if (sku.category === 'cas') {
+      const ratioFactor = round4((1 - baseUsageRatio) / CAS_REFERENCE_USAGE_RATIO);
+      result.unit_price = round4(result.unit_price * ratioFactor);
+      result.list_price = round4(result.list_price * ratioFactor);
+      // Recalculate totals with adjusted price
+      result.usage_total = round2(result.unit_price * qty);
+      result.monthly_total = result.usage_total;
+      result.ratio_factor = ratioFactor;
+    }
   }
 
   result.annual_total = round2(result.monthly_total * 12);
@@ -1023,6 +1051,8 @@ serve(async (req) => {
         throw new Error('Quote not found');
       }
 
+      const baseUsageRatio = quote.base_usage_ratio ?? 0.60;
+
       // Convert packages to typed format
       const packages: QuotePackage[] = quote.quote_packages.map((pkg: any) => ({
         id: pkg.id,
@@ -1058,7 +1088,7 @@ serve(async (req) => {
       for (const item of allItems) {
         const packageTerm = packageTerms.get(item.package_id) || 12;
 
-        const result = calculateItemPricingWithPhases(ctx, item, packageTerm, weightedPrices);
+        const result = calculateItemPricingWithPhases(ctx, item, packageTerm, weightedPrices, baseUsageRatio);
         results.push(result);
 
         quoteTotalMonthly += result.monthly_total;
@@ -1082,6 +1112,7 @@ serve(async (req) => {
             annual_total: result.annual_total,
             aggregated_qty: result.aggregated_qty,
             pricing_phases: result.pricing_phases,
+            ratio_factor: result.ratio_factor,
           })
           .eq('id', result.item_id);
       }
