@@ -84,6 +84,7 @@ import {
   extractYearsFromScenarios,
 } from '@/lib/quote-generator'
 import { ManualSkuInput } from '@/components/ManualSkuInput'
+import { SkuCatalogDialog } from '@/components/SkuCatalogDialog'
 import { AlertTriangle, Settings2 } from 'lucide-react'
 
 const statusOptions: QuoteStatus[] = ['draft', 'pending', 'sent', 'accepted', 'rejected', 'expired', 'ordered']
@@ -147,6 +148,9 @@ export default function QuoteBuilder() {
 
   // Manual SKU quantities for unmapped infrastructure SKUs
   const [manualSkuItems, setManualSkuItems] = useState<ManualSkuItem[]>([])
+
+  // SKU catalog dialog state
+  const [skuCatalogPackageId, setSkuCatalogPackageId] = useState<string | null>(null)
 
   // Check if we have multiple scenarios
   const hasMultipleScenarios = (locationState?.scenarioIds?.length || 0) > 1
@@ -700,24 +704,28 @@ export default function QuoteBuilder() {
     },
   })
 
-  // Add line item
-  const addLineItem = useMutation({
-    mutationFn: async ({ packageId, skuId }: { packageId: string; skuId: string }) => {
+  // Bulk add line items (from SKU catalog dialog)
+  const bulkAddLineItems = useMutation({
+    mutationFn: async ({ packageId, skuIds }: { packageId: string; skuIds: string[] }) => {
       const pkg = quote?.quote_packages.find(p => p.id === packageId)
-      const { error } = await supabase
-        .from('quote_items')
-        .insert({
-          package_id: packageId,
-          sku_id: skuId,
-          quantity: 1,
-          environment: 'production',
-          sort_order: (pkg?.quote_items?.length || 0) + 1,
-        })
-
+      const startSort = (pkg?.quote_items?.length || 0) + 1
+      const rows = skuIds.map((skuId, i) => ({
+        package_id: packageId,
+        sku_id: skuId,
+        quantity: 1,
+        environment: 'production' as const,
+        sort_order: startSort + i,
+      }))
+      const { error } = await supabase.from('quote_items').insert(rows)
       if (error) throw error
     },
     onSuccess: () => {
+      setSkuCatalogPackageId(null)
       refetchQuote()
+      toast({ title: 'SKUs added' })
+    },
+    onError: (error) => {
+      toast({ variant: 'destructive', title: 'Failed to add SKUs', description: error.message })
     },
   })
 
@@ -780,12 +788,29 @@ export default function QuoteBuilder() {
     },
   })
 
-  // Calculate pricing
+  // Calculate pricing (saves form data first so edge function reads latest values)
   const calculatePricing = async () => {
     if (!id) return
 
     setCalculating(true)
     try {
+      // Persist form data (including base_usage_ratio) before calculating
+      const { error: saveError } = await supabase
+        .from('quotes')
+        .update({
+          customer_id: formData.customer_id || null,
+          title: formData.title || null,
+          status: formData.status,
+          quote_type: formData.quote_type,
+          valid_until: formData.valid_until || null,
+          use_aggregated_pricing: formData.use_aggregated_pricing,
+          base_usage_ratio: formData.base_usage_ratio,
+          notes: formData.notes || null,
+        })
+        .eq('id', id)
+
+      if (saveError) throw saveError
+
       const response = await invokeEdgeFunction<CalculatePricingResponse>(
         'calculate-pricing',
         { action: 'calculate_quote', quote_id: id }
@@ -1418,106 +1443,137 @@ export default function QuoteBuilder() {
                             <TableHead className="w-32">Environment</TableHead>
                             <TableHead className="text-right">List Price</TableHead>
                             <TableHead className="text-right">Discount</TableHead>
-                            <TableHead className="text-right">Ratio</TableHead>
                             <TableHead className="text-right">Unit Price</TableHead>
                             <TableHead className="text-right">Monthly</TableHead>
                             <TableHead className="w-12"></TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {(pkg.quote_items || []).map((item) => (
-                            <TableRow key={item.id}>
-                              <TableCell>
-                                <div>
-                                  <div className="font-mono text-sm">{item.sku?.code}</div>
-                                  <div className="text-sm text-muted-foreground">
-                                    {item.sku?.description}
-                                  </div>
-                                </div>
-                              </TableCell>
-                              <TableCell>
-                                <QuickQuantityInput
-                                  value={item.quantity}
-                                  onChange={(qty) =>
-                                    updateLineItem.mutate({
-                                      itemId: item.id,
-                                      updates: { quantity: qty },
-                                    })
-                                  }
-                                  min={1}
-                                  step={Math.max(1, Math.round(item.quantity * 0.1))}
-                                  debounceMs={800}
-                                  showQuickControls={true}
-                                />
-                              </TableCell>
-                              <TableCell>
-                                <Select
-                                  value={item.environment}
-                                  onValueChange={(v) =>
-                                    updateLineItem.mutate({
-                                      itemId: item.id,
-                                      updates: { environment: v as 'production' | 'reference' },
-                                    })
-                                  }
-                                >
-                                  <SelectTrigger className="w-28">
-                                    <SelectValue />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="production">Production</SelectItem>
-                                    <SelectItem value="reference">Reference</SelectItem>
-                                  </SelectContent>
-                                </Select>
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {item.list_price ? formatCurrency(item.list_price) : '-'}
-                              </TableCell>
-                              <TableCell className="text-right text-green-600">
-                                {item.total_discount_pct ? `-${formatPercent(item.total_discount_pct)}` : '-'}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {item.ratio_factor != null && item.ratio_factor !== 1 ? (
-                                  <span className="text-xs text-blue-600 font-mono">
-                                    x{item.ratio_factor.toFixed(2)}
-                                  </span>
-                                ) : '-'}
-                              </TableCell>
-                              <TableCell className="text-right font-medium">
-                                {item.unit_price ? formatCurrency(item.unit_price) : '-'}
-                              </TableCell>
-                              <TableCell className="text-right font-medium">
-                                {item.monthly_total ? formatCurrency(item.monthly_total) : '-'}
-                              </TableCell>
-                              <TableCell>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => deleteLineItem.mutate(item.id)}
-                                >
-                                  <Trash2 className="h-4 w-4 text-destructive" />
-                                </Button>
-                              </TableCell>
-                            </TableRow>
-                          ))}
+                          {(() => {
+                            const items = pkg.quote_items || []
+                            const categoryOrder: Array<'cas' | 'cno' | 'ccs' | 'default'> = ['cas', 'cno', 'ccs', 'default']
+                            const categoryLabels: Record<string, string> = { cas: 'CAS', cno: 'CNO', ccs: 'CCS', default: 'Default' }
+                            const rows: React.ReactNode[] = []
+
+                            for (const cat of categoryOrder) {
+                              const catItems = items.filter(i => (i.sku?.category || 'default') === cat)
+                              if (catItems.length === 0) continue
+
+                              const baseItems = catItems.filter(i => i.sku?.is_base_charge)
+                              const usageItems = catItems.filter(i => !i.sku?.is_base_charge)
+
+                              // Category header
+                              rows.push(
+                                <TableRow key={`cat-${cat}`} className="bg-muted/50 hover:bg-muted/50">
+                                  <TableCell colSpan={8} className="py-1.5">
+                                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                      {categoryLabels[cat]}
+                                    </span>
+                                  </TableCell>
+                                </TableRow>
+                              )
+
+                              const renderSubGroup = (label: string, subItems: typeof items) => {
+                                if (subItems.length === 0) return
+                                rows.push(
+                                  <TableRow key={`${cat}-${label}`} className="hover:bg-transparent">
+                                    <TableCell colSpan={8} className="py-1 pl-6">
+                                      <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                                        {label}
+                                      </span>
+                                    </TableCell>
+                                  </TableRow>
+                                )
+                                for (const item of subItems) {
+                                  rows.push(
+                                    <TableRow key={item.id}>
+                                      <TableCell>
+                                        <div>
+                                          <div className="font-mono text-sm">{item.sku?.code}</div>
+                                          <div className="text-sm text-muted-foreground">
+                                            {item.sku?.description}
+                                          </div>
+                                        </div>
+                                      </TableCell>
+                                      <TableCell>
+                                        <QuickQuantityInput
+                                          value={item.quantity}
+                                          onChange={(qty) =>
+                                            updateLineItem.mutate({
+                                              itemId: item.id,
+                                              updates: { quantity: qty },
+                                            })
+                                          }
+                                          min={1}
+                                          step={Math.max(1, Math.round(item.quantity * 0.1))}
+                                          debounceMs={800}
+                                          showQuickControls={true}
+                                        />
+                                      </TableCell>
+                                      <TableCell>
+                                        <Select
+                                          value={item.environment}
+                                          onValueChange={(v) =>
+                                            updateLineItem.mutate({
+                                              itemId: item.id,
+                                              updates: { environment: v as 'production' | 'reference' },
+                                            })
+                                          }
+                                        >
+                                          <SelectTrigger className="w-28">
+                                            <SelectValue />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            <SelectItem value="production">Production</SelectItem>
+                                            <SelectItem value="reference">Reference</SelectItem>
+                                          </SelectContent>
+                                        </Select>
+                                      </TableCell>
+                                      <TableCell className="text-right">
+                                        {item.list_price ? formatCurrency(item.list_price) : '-'}
+                                      </TableCell>
+                                      <TableCell className="text-right text-green-600">
+                                        {item.total_discount_pct ? `-${formatPercent(item.total_discount_pct)}` : '-'}
+                                      </TableCell>
+                                      <TableCell className="text-right font-medium">
+                                        {item.unit_price ? formatCurrency(item.unit_price) : '-'}
+                                      </TableCell>
+                                      <TableCell className="text-right font-medium">
+                                        {item.monthly_total ? formatCurrency(item.monthly_total) : '-'}
+                                      </TableCell>
+                                      <TableCell>
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          onClick={() => deleteLineItem.mutate(item.id)}
+                                        >
+                                          <Trash2 className="h-4 w-4 text-destructive" />
+                                        </Button>
+                                      </TableCell>
+                                    </TableRow>
+                                  )
+                                }
+                              }
+
+                              renderSubGroup('Base Charges', baseItems)
+                              renderSubGroup('Usage', usageItems)
+                            }
+
+                            return rows
+                          })()}
                         </TableBody>
                       </Table>
 
                       {/* Add Line Item */}
-                      <div className="mt-4 flex gap-2">
-                        <Select
-                          onValueChange={(skuId) => addLineItem.mutate({ packageId: pkg.id, skuId })}
+                      <div className="mt-4">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSkuCatalogPackageId(pkg.id)}
                         >
-                          <SelectTrigger className="w-64">
-                            <SelectValue placeholder="Add SKU..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {skus?.map((sku) => (
-                              <SelectItem key={sku.id} value={sku.id}>
-                                {sku.code} - {sku.description}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                          <Plus className="mr-2 h-4 w-4" />
+                          Add SKUs...
+                        </Button>
                       </div>
                     </div>
                   )}
@@ -1748,6 +1804,26 @@ export default function QuoteBuilder() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* SKU Catalog Dialog */}
+      {skus && (
+        <SkuCatalogDialog
+          isOpen={skuCatalogPackageId !== null}
+          onClose={() => setSkuCatalogPackageId(null)}
+          skus={skus}
+          existingSkuIds={new Set(
+            quote?.quote_packages
+              .find(p => p.id === skuCatalogPackageId)
+              ?.quote_items?.map(item => item.sku_id) ?? []
+          )}
+          onAddSkus={(skuIds) => {
+            if (skuCatalogPackageId) {
+              bulkAddLineItems.mutate({ packageId: skuCatalogPackageId, skuIds })
+            }
+          }}
+          isAdding={bulkAddLineItems.isPending}
+        />
+      )}
     </div>
   )
 }
