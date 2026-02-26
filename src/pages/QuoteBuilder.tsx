@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase, invokeEdgeFunction } from '@/lib/supabase'
@@ -773,6 +773,8 @@ export default function QuoteBuilder() {
     return () => clearTimeout(timer)
   }, [pendingCalculation, calculating, id, refetchQuote])
 
+  const ratioAutoCalcTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // Delete line item
   const deleteLineItem = useMutation({
     mutationFn: async (itemId: string) => {
@@ -1137,57 +1139,63 @@ export default function QuoteBuilder() {
                 <Label>Use aggregated pricing (combine quantities across packages for volume discounts)</Label>
               </div>
 
-              {/* Base/Usage Ratio Slider (visible when quote has CAS SKUs) */}
-              {hasCasSkus && (
-                <div className="col-span-full space-y-2">
-                  <label className="text-sm font-medium">Base/Usage Ratio (CAS)</label>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-muted-foreground w-12">Base</span>
-                    <input
-                      type="range"
-                      min="1"
-                      max="99"
-                      step="1"
-                      value={Math.round(formData.base_usage_ratio * 100)}
-                      onChange={(e) => setFormData(prev => ({
-                        ...prev,
-                        base_usage_ratio: parseInt(e.target.value) / 100
-                      }))}
-                      className="flex-1"
-                    />
-                    <span className="text-xs text-muted-foreground w-12 text-right">Usage</span>
-                  </div>
-                  <div className="text-center text-sm font-mono">
-                    {Math.round(formData.base_usage_ratio * 100)}% Base / {Math.round((1 - formData.base_usage_ratio) * 100)}% Usage
-                  </div>
-                  <div className="flex gap-2 justify-center">
-                    <button
-                      type="button"
-                      className={`text-xs px-2 py-1 rounded border ${Math.round(formData.base_usage_ratio * 100) === 80 ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
-                      onClick={() => setFormData(prev => ({ ...prev, base_usage_ratio: 0.80 }))}
-                    >
-                      Commitment (80/20)
-                    </button>
-                    <button
-                      type="button"
-                      className={`text-xs px-2 py-1 rounded border ${Math.round(formData.base_usage_ratio * 100) === 60 ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
-                      onClick={() => setFormData(prev => ({ ...prev, base_usage_ratio: 0.60 }))}
-                    >
-                      Standard (60/40)
-                    </button>
-                    <button
-                      type="button"
-                      className={`text-xs px-2 py-1 rounded border ${Math.round(formData.base_usage_ratio * 100) === 10 ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
-                      onClick={() => setFormData(prev => ({ ...prev, base_usage_ratio: 0.10 }))}
-                    >
-                      Pay-per-use (10/90)
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           </CardContent>
         </Card>
+
+        {/* Base/Usage Ratio Slider — sticky so it stays visible while scrolling through SKUs */}
+        {hasCasSkus && (
+          <div className="sticky top-0 z-10 bg-background border border-border rounded-lg px-4 py-3 space-y-2 shadow-sm">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">Base/Usage Ratio (CAS)</label>
+              <Button size="sm" variant="outline" onClick={calculatePricing} disabled={calculating}>
+                <Calculator className="mr-2 h-4 w-4" />
+                {calculating ? 'Calculating...' : 'Calculate'}
+              </Button>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-muted-foreground w-12">Base</span>
+              <input
+                type="range"
+                min="1"
+                max="99"
+                step="1"
+                value={Math.round(formData.base_usage_ratio * 100)}
+                onChange={(e) => {
+                  const newRatio = parseInt(e.target.value) / 100
+                  setFormData(prev => ({ ...prev, base_usage_ratio: newRatio }))
+                  if (autoCalculate) {
+                    if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
+                    ratioAutoCalcTimer.current = setTimeout(() => calculatePricing(), 1500)
+                  }
+                }}
+                className="flex-1"
+              />
+              <span className="text-xs text-muted-foreground w-12 text-right">Usage</span>
+            </div>
+            <div className="text-center text-sm font-mono">
+              {Math.round(formData.base_usage_ratio * 100)}% Base / {Math.round((1 - formData.base_usage_ratio) * 100)}% Usage
+            </div>
+            <div className="flex gap-2 justify-center">
+              {([{ label: 'Commitment (80/20)', value: 0.80, display: 80 }, { label: 'Standard (60/40)', value: 0.60, display: 60 }, { label: 'Pay-per-use (10/90)', value: 0.10, display: 10 }] as const).map(preset => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  className={`text-xs px-2 py-1 rounded border ${Math.round(formData.base_usage_ratio * 100) === preset.display ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
+                  onClick={() => {
+                    setFormData(prev => ({ ...prev, base_usage_ratio: preset.value }))
+                    if (autoCalculate) {
+                      if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
+                      ratioAutoCalcTimer.current = setTimeout(() => calculatePricing(), 1500)
+                    }
+                  }}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* SKU Mapping Warning */}
         {showSkuMappingWarning && (
