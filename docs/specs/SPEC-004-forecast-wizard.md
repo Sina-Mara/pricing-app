@@ -1,6 +1,6 @@
 # SPEC-004: Forecast Wizard
 
-**Status:** draft
+**Status:** decomposed
 **Created:** 2026-02-24
 
 ## Problem

@@ -102,7 +102,7 @@ Autoforge executes
 | **draft** | Initial capture from discussion | Problem statement captured |
 | **iterating** | Being refined across sessions | Decisions accumulating, questions being resolved |
 | **ready** | All open questions resolved | Thin spec complete (~50 lines) |
-| **decomposed** | Features created in Autoforge | Terminal state |
+| **decomposed** | Features created in Autoforge, or implementation complete | Terminal state |
 
 ## Commands
 

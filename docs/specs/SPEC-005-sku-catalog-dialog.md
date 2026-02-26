@@ -1,6 +1,6 @@
 # SPEC-005: SKU Catalog Dialog with Bulk Add
 
-**Status:** Implemented
+**Status:** decomposed
 **Author:** Claude
 **Date:** 2026-02-24
 
