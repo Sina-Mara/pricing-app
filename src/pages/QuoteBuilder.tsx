@@ -777,6 +777,8 @@ export default function QuoteBuilder() {
   }, [pendingCalculation, calculating, id, refetchQuote])
 
   const ratioAutoCalcTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const ratioSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const calculatePricingRef = useRef<() => Promise<void>>(async () => {})
 
   // Delete line item
   const deleteLineItem = useMutation({
@@ -834,6 +836,8 @@ export default function QuoteBuilder() {
       setCalculating(false)
     }
   }
+  // Keep ref pointing to latest calculatePricing (avoids stale closure in setTimeout)
+  calculatePricingRef.current = calculatePricing
 
   // Handle save
   const handleSave = async () => {
@@ -1177,9 +1181,15 @@ export default function QuoteBuilder() {
                 onChange={(e) => {
                   const newRatio = parseInt(e.target.value) / 100
                   setFormData(prev => ({ ...prev, base_usage_ratio: newRatio }))
+                  // Persist to DB immediately (debounced) so any refetch returns the correct value
+                  if (ratioSaveTimer.current) clearTimeout(ratioSaveTimer.current)
+                  ratioSaveTimer.current = setTimeout(async () => {
+                    if (!id) return
+                    await supabase.from('quotes').update({ base_usage_ratio: newRatio }).eq('id', id)
+                  }, 500)
                   if (autoCalculate) {
                     if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
-                    ratioAutoCalcTimer.current = setTimeout(() => calculatePricing(), 1500)
+                    ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
                   }
                 }}
                 className="flex-1"
@@ -1197,9 +1207,14 @@ export default function QuoteBuilder() {
                   className={`text-xs px-2 py-1 rounded border ${Math.round(formData.base_usage_ratio * 100) === preset.display ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
                   onClick={() => {
                     setFormData(prev => ({ ...prev, base_usage_ratio: preset.value }))
+                    if (ratioSaveTimer.current) clearTimeout(ratioSaveTimer.current)
+                    ratioSaveTimer.current = setTimeout(async () => {
+                      if (!id) return
+                      await supabase.from('quotes').update({ base_usage_ratio: preset.value }).eq('id', id)
+                    }, 500)
                     if (autoCalculate) {
                       if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
-                      ratioAutoCalcTimer.current = setTimeout(() => calculatePricing(), 1500)
+                      ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
                     }
                   }}
                 >
@@ -1461,7 +1476,6 @@ export default function QuoteBuilder() {
                           <TableRow>
                             <TableHead>SKU</TableHead>
                             <TableHead className="w-24">Qty</TableHead>
-                            <TableHead className="w-32">Environment</TableHead>
                             <TableHead className="text-right">List Price</TableHead>
                             <TableHead className="text-right">Discount</TableHead>
                             <TableHead className="text-right">Unit Price</TableHead>
@@ -1500,23 +1514,15 @@ export default function QuoteBuilder() {
                                     showQuickControls={true}
                                   />
                                 </TableCell>
-                                <TableCell>
-                                  <Select
-                                    value={item.environment}
-                                    onValueChange={(v) => updateLineItem.mutate({ itemId: item.id, updates: { environment: v as 'production' | 'reference' } })}
-                                  >
-                                    <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="production">Production</SelectItem>
-                                      <SelectItem value="reference">Reference</SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                </TableCell>
                                 <TableCell className="text-right">
                                   {item.list_price ? formatCurrency(item.list_price) : '-'}
                                 </TableCell>
-                                <TableCell className="text-right text-green-600">
-                                  {item.total_discount_pct ? `-${formatPercent(item.total_discount_pct)}` : '-'}
+                                <TableCell className={`text-right ${item.total_discount_pct && item.total_discount_pct > 0 ? 'text-green-600' : item.total_discount_pct && item.total_discount_pct < 0 ? 'text-orange-500' : ''}`}>
+                                  {item.total_discount_pct
+                                    ? item.total_discount_pct > 0
+                                      ? `-${formatPercent(item.total_discount_pct)}`
+                                      : `+${formatPercent(Math.abs(item.total_discount_pct))}`
+                                    : '-'}
                                 </TableCell>
                                 <TableCell className="text-right font-medium">
                                   {item.unit_price ? (

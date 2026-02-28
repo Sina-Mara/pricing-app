@@ -932,33 +932,34 @@ function calculatePerpetualPricing(
 // ============================================================================
 
 async function loadPricingContext(supabase: any): Promise<PricingContext> {
-  // Load SKUs
-  const { data: skusData } = await supabase
-    .from('skus')
-    .select('*')
-    .eq('is_active', true);
+  // Fire all 7 queries in parallel instead of sequentially
+  const [
+    { data: skusData },
+    { data: modelsData },
+    { data: laddersData },
+    { data: termData },
+    { data: baseData },
+    { data: envData },
+    { data: defaultEnvData },
+  ] = await Promise.all([
+    supabase.from('skus').select('*').eq('is_active', true),
+    supabase.from('pricing_models').select('*').eq('is_active', true),
+    supabase.from('ladders').select('*').order('min_qty', { ascending: true }),
+    supabase.from('term_factors').select('*'),
+    supabase.from('base_charges').select('*'),
+    supabase.from('env_factors').select('*'),
+    supabase.from('default_env_factors').select('*'),
+  ]);
 
   const skus = new Map<string, Sku>();
   for (const sku of skusData || []) {
     skus.set(sku.id, sku);
   }
 
-  // Load Pricing Models
-  const { data: modelsData } = await supabase
-    .from('pricing_models')
-    .select('*')
-    .eq('is_active', true);
-
   const pricingModels = new Map<string, PricingModel>();
   for (const model of modelsData || []) {
     pricingModels.set(model.sku_id, model);
   }
-
-  // Load Ladders
-  const { data: laddersData } = await supabase
-    .from('ladders')
-    .select('*')
-    .order('min_qty', { ascending: true });
 
   const ladders = new Map<string, Ladder[]>();
   for (const ladder of laddersData || []) {
@@ -968,11 +969,6 @@ async function loadPricingContext(supabase: any): Promise<PricingContext> {
     ladders.get(ladder.sku_id)!.push(ladder);
   }
 
-  // Load Term Factors
-  const { data: termData } = await supabase
-    .from('term_factors')
-    .select('*');
-
   const termFactors = new Map<string, Map<number, number>>();
   for (const tf of termData || []) {
     if (!termFactors.has(tf.category)) {
@@ -981,20 +977,10 @@ async function loadPricingContext(supabase: any): Promise<PricingContext> {
     termFactors.get(tf.category)!.set(tf.term_months, tf.factor);
   }
 
-  // Load Base Charges
-  const { data: baseData } = await supabase
-    .from('base_charges')
-    .select('*');
-
   const baseCharges = new Map<string, BaseCharge>();
   for (const bc of baseData || []) {
     baseCharges.set(bc.sku_id, bc);
   }
-
-  // Load Environment Factors
-  const { data: envData } = await supabase
-    .from('env_factors')
-    .select('*');
 
   const envFactors = new Map<string, Map<string, number>>();
   for (const ef of envData || []) {
@@ -1003,11 +989,6 @@ async function loadPricingContext(supabase: any): Promise<PricingContext> {
     }
     envFactors.get(ef.sku_id)!.set(ef.environment, ef.factor);
   }
-
-  // Load Default Environment Factors
-  const { data: defaultEnvData } = await supabase
-    .from('default_env_factors')
-    .select('*');
 
   const defaultEnvFactors = new Map<string, number>();
   for (const def of defaultEnvData || []) {
@@ -1107,53 +1088,52 @@ serve(async (req) => {
         quoteTotalAnnual += result.annual_total;
       }
 
-      // Update items in database
+      // Build package subtotals
+      const itemPackageMap = new Map<string, string>();
+      for (const item of allItems) {
+        itemPackageMap.set(item.id, item.package_id);
+      }
+      const pkgTotals = new Map<string, { monthly: number; annual: number }>();
       for (const result of results) {
-        await supabase
-          .from('quote_items')
-          .update({
-            list_price: result.list_price,
-            volume_discount_pct: result.volume_discount_pct,
-            term_discount_pct: result.term_discount_pct,
-            env_factor: result.env_factor,
-            unit_price: result.unit_price,
-            total_discount_pct: result.total_discount_pct,
-            usage_total: result.usage_total,
-            base_charge: result.base_charge,
-            monthly_total: result.monthly_total,
-            annual_total: result.annual_total,
-            aggregated_qty: result.aggregated_qty,
-            pricing_phases: result.pricing_phases,
-            ratio_factor: result.ratio_factor,
-          })
-          .eq('id', result.item_id);
+        const pkgId = itemPackageMap.get(result.item_id)!;
+        const cur = pkgTotals.get(pkgId) || { monthly: 0, annual: 0 };
+        cur.monthly += result.monthly_total;
+        cur.annual += result.annual_total;
+        pkgTotals.set(pkgId, cur);
       }
 
-      // Update quote totals
-      await supabase
-        .from('quotes')
-        .update({
+      // Batch all writes in parallel: item upsert + package upserts + quote update
+      await Promise.all([
+        supabase.from('quote_items').upsert(
+          results.map(r => ({
+            id: r.item_id,
+            list_price: r.list_price,
+            volume_discount_pct: r.volume_discount_pct,
+            term_discount_pct: r.term_discount_pct,
+            env_factor: r.env_factor,
+            unit_price: r.unit_price,
+            total_discount_pct: r.total_discount_pct,
+            usage_total: r.usage_total,
+            base_charge: r.base_charge,
+            monthly_total: r.monthly_total,
+            annual_total: r.annual_total,
+            aggregated_qty: r.aggregated_qty,
+            pricing_phases: r.pricing_phases,
+            ratio_factor: r.ratio_factor,
+          }))
+        ),
+        supabase.from('quote_packages').upsert(
+          Array.from(pkgTotals.entries()).map(([pkgId, totals]) => ({
+            id: pkgId,
+            subtotal_monthly: round2(totals.monthly),
+            subtotal_annual: round2(totals.annual),
+          }))
+        ),
+        supabase.from('quotes').update({
           total_monthly: round2(quoteTotalMonthly),
           total_annual: round2(quoteTotalAnnual),
-        })
-        .eq('id', quote_id);
-
-      // Update package subtotals
-      for (const pkg of quote.quote_packages) {
-        const pkgResults = results.filter(r => 
-          allItems.find(i => i.id === r.item_id)?.package_id === pkg.id
-        );
-        const pkgMonthly = pkgResults.reduce((sum, r) => sum + r.monthly_total, 0);
-        const pkgAnnual = pkgResults.reduce((sum, r) => sum + r.annual_total, 0);
-
-        await supabase
-          .from('quote_packages')
-          .update({
-            subtotal_monthly: round2(pkgMonthly),
-            subtotal_annual: round2(pkgAnnual),
-          })
-          .eq('id', pkg.id);
-      }
+        }).eq('id', quote_id),
+      ]);
 
       return new Response(
         JSON.stringify({
