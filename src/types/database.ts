@@ -16,6 +16,8 @@ export interface Sku {
   is_base_charge: boolean
   is_direct_cost: boolean
   is_active: boolean
+  application: string | null
+  component: string | null
   created_at: string
   updated_at: string
 }
@@ -93,6 +95,7 @@ export interface Quote {
   status: QuoteStatus
   quote_type: QuoteType
   title: string | null
+  solution: string | null
   notes: string | null
   valid_until: string | null
   use_aggregated_pricing: boolean

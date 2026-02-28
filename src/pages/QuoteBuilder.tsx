@@ -277,6 +277,7 @@ export default function QuoteBuilder() {
   const [formData, setFormData] = useState({
     customer_id: '',
     title: '',
+    solution: '',
     status: 'draft' as QuoteStatus,
     quote_type: (locationState?.quoteType || 'commitment') as QuoteType,
     valid_until: '',
@@ -291,6 +292,7 @@ export default function QuoteBuilder() {
       setFormData({
         customer_id: quote.customer_id || '',
         title: quote.title || '',
+        solution: quote.solution || '',
         status: quote.status,
         quote_type: quote.quote_type || 'commitment',
         valid_until: quote.valid_until || '',
@@ -533,6 +535,7 @@ export default function QuoteBuilder() {
         .update({
           customer_id: formData.customer_id || null,
           title: formData.title || null,
+          solution: formData.solution || null,
           status: formData.status,
           quote_type: formData.quote_type,
           valid_until: formData.valid_until || null,
@@ -802,6 +805,7 @@ export default function QuoteBuilder() {
         .update({
           customer_id: formData.customer_id || null,
           title: formData.title || null,
+          solution: formData.solution || null,
           status: formData.status,
           quote_type: formData.quote_type,
           valid_until: formData.valid_until || null,
@@ -1040,6 +1044,15 @@ export default function QuoteBuilder() {
                   value={formData.title}
                   onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
                   placeholder="Quote title"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Solution</Label>
+                <Input
+                  value={formData.solution}
+                  onChange={(e) => setFormData(prev => ({ ...prev, solution: e.target.value }))}
+                  placeholder="e.g. MVNO Builder"
                 />
               </div>
 
@@ -1459,128 +1472,215 @@ export default function QuoteBuilder() {
                         <TableBody>
                           {(() => {
                             const items = pkg.quote_items || []
-                            const categoryOrder: Array<'cas' | 'cno' | 'ccs' | 'default'> = ['cas', 'cno', 'ccs', 'default']
-                            const categoryLabels: Record<string, string> = { cas: 'CAS', cno: 'CNO', ccs: 'CCS', default: 'Default' }
                             const rows: React.ReactNode[] = []
 
-                            for (const cat of categoryOrder) {
-                              const catItems = items.filter(i => (i.sku?.category || 'default') === cat)
-                              if (catItems.length === 0) continue
+                            // Reusable item row renderer
+                            const renderItemRow = (item: typeof items[0], isDirectCost = false) => (
+                              <TableRow key={item.id} className={isDirectCost ? 'bg-amber-50/40 dark:bg-amber-950/20' : undefined}>
+                                <TableCell>
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-mono text-sm">{item.sku?.code}</span>
+                                      {isDirectCost && (
+                                        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+                                          pass-through
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-sm text-muted-foreground">{item.sku?.description}</div>
+                                  </div>
+                                </TableCell>
+                                <TableCell>
+                                  <QuickQuantityInput
+                                    value={item.quantity}
+                                    onChange={(qty) => updateLineItem.mutate({ itemId: item.id, updates: { quantity: qty } })}
+                                    min={1}
+                                    step={Math.max(1, Math.round(item.quantity * 0.1))}
+                                    debounceMs={800}
+                                    showQuickControls={true}
+                                  />
+                                </TableCell>
+                                <TableCell>
+                                  <Select
+                                    value={item.environment}
+                                    onValueChange={(v) => updateLineItem.mutate({ itemId: item.id, updates: { environment: v as 'production' | 'reference' } })}
+                                  >
+                                    <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="production">Production</SelectItem>
+                                      <SelectItem value="reference">Reference</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  {item.list_price ? formatCurrency(item.list_price) : '-'}
+                                </TableCell>
+                                <TableCell className="text-right text-green-600">
+                                  {item.total_discount_pct ? `-${formatPercent(item.total_discount_pct)}` : '-'}
+                                </TableCell>
+                                <TableCell className="text-right font-medium">
+                                  {item.unit_price ? (
+                                    <div>
+                                      <span>{formatCurrency(item.unit_price)}</span>
+                                      {item.sku?.unit?.startsWith('per ') && (
+                                        <div className="text-xs text-muted-foreground font-normal">{item.sku.unit}</div>
+                                      )}
+                                    </div>
+                                  ) : '-'}
+                                </TableCell>
+                                <TableCell className="text-right font-medium">
+                                  {item.monthly_total ? formatCurrency(item.monthly_total) : '-'}
+                                </TableCell>
+                                <TableCell>
+                                  <Button variant="ghost" size="icon" onClick={() => deleteLineItem.mutate(item.id)}>
+                                    <Trash2 className="h-4 w-4 text-destructive" />
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            )
 
-                              const baseItems = catItems.filter(i => i.sku?.is_base_charge)
-                              const usageItems = catItems.filter(i => !i.sku?.is_base_charge && !i.sku?.is_direct_cost)
-                              const directCostItems = catItems.filter(i => !i.sku?.is_base_charge && i.sku?.is_direct_cost)
+                            const renderSubGroupHeader = (key: string, label: string, indent = 'pl-8') => (
+                              <TableRow key={key} className="hover:bg-transparent">
+                                <TableCell colSpan={8} className={`py-1 ${indent}`}>
+                                  <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                                    {label}
+                                  </span>
+                                </TableCell>
+                              </TableRow>
+                            )
 
-                              // Category header
+                            // ── Partition items ────────────────────────────────────────────────
+                            // CCS = solution anchor row
+                            const ccsItems = items.filter(i => i.sku?.category === 'ccs')
+
+                            // Items with application set → structured hierarchy
+                            const appItems = items.filter(i => i.sku?.application)
+
+                            // Items without application → fallback flat rendering (CNO etc.)
+                            const otherItems = items.filter(i => !i.sku?.application && i.sku?.category !== 'ccs')
+
+                            // ── 1. Solution anchor (CCS) ───────────────────────────────────────
+                            if (ccsItems.length > 0) {
                               rows.push(
-                                <TableRow key={`cat-${cat}`} className="bg-muted/50 hover:bg-muted/50">
-                                  <TableCell colSpan={8} className="py-1.5">
-                                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                                      {categoryLabels[cat]}
-                                    </span>
+                                <TableRow key="solution-header" className="bg-primary/5 hover:bg-primary/5 border-b-2 border-primary/20">
+                                  <TableCell colSpan={8} className="py-2 pl-4">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs font-semibold uppercase tracking-widest text-primary/70">Solution</span>
+                                      {formData.solution && (
+                                        <span className="text-sm font-semibold text-foreground">{formData.solution}</span>
+                                      )}
+                                    </div>
                                   </TableCell>
                                 </TableRow>
                               )
+                              ccsItems.forEach(item => rows.push(renderItemRow(item)))
+                            }
 
-                              const renderSubGroup = (label: string, subItems: typeof items, isDirectCost = false) => {
-                                if (subItems.length === 0) return
+                            // ── 2. Application → Component groups ──────────────────────────────
+                            if (appItems.length > 0) {
+                              // Collect unique applications in stable order
+                              const appOrder = ['Cennso', 'Packet Gateway', 'Local Breakouts']
+                              const seenApps = new Set<string>()
+                              const apps = [
+                                ...appOrder.filter(a => appItems.some(i => i.sku?.application === a)),
+                                ...appItems
+                                  .map(i => i.sku?.application!)
+                                  .filter(a => !appOrder.includes(a) && !seenApps.has(a) && (seenApps.add(a), true)),
+                              ]
+
+                              for (const app of apps) {
+                                const appGroupItems = appItems.filter(i => i.sku?.application === app)
+
+                                // Application header
                                 rows.push(
-                                  <TableRow key={`${cat}-${label}`} className="hover:bg-transparent">
-                                    <TableCell colSpan={8} className="py-1 pl-6">
-                                      <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
-                                        {label}
+                                  <TableRow key={`app-${app}`} className="bg-muted/50 hover:bg-muted/50">
+                                    <TableCell colSpan={8} className="py-1.5 pl-4">
+                                      <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                        {app}
                                       </span>
                                     </TableCell>
                                   </TableRow>
                                 )
-                                for (const item of subItems) {
+
+                                // Group by component within application
+                                const componentOrder = ['Cennso', 'SMC', 'UPG', 'TPOSS', 'LLM', 'HRS']
+                                const seenComps = new Set<string>()
+                                const components = [
+                                  ...componentOrder.filter(c => appGroupItems.some(i => i.sku?.component === c)),
+                                  ...appGroupItems
+                                    .map(i => i.sku?.component!)
+                                    .filter(c => c && !componentOrder.includes(c) && !seenComps.has(c) && (seenComps.add(c), true)),
+                                ]
+
+                                for (const comp of components) {
+                                  const compItems = appGroupItems.filter(i => i.sku?.component === comp)
+                                  const compBase = compItems.filter(i => i.sku?.is_base_charge)
+                                  const compUsage = compItems.filter(i => !i.sku?.is_base_charge && !i.sku?.is_direct_cost)
+                                  const compDirect = compItems.filter(i => !i.sku?.is_base_charge && i.sku?.is_direct_cost)
+
+                                  // Component sub-header
                                   rows.push(
-                                    <TableRow key={item.id} className={isDirectCost ? 'bg-amber-50/40 dark:bg-amber-950/20' : undefined}>
-                                      <TableCell>
-                                        <div>
-                                          <div className="flex items-center gap-2">
-                                            <span className="font-mono text-sm">{item.sku?.code}</span>
-                                            {isDirectCost && (
-                                              <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
-                                                pass-through
-                                              </span>
-                                            )}
-                                          </div>
-                                          <div className="text-sm text-muted-foreground">
-                                            {item.sku?.description}
-                                          </div>
-                                        </div>
-                                      </TableCell>
-                                      <TableCell>
-                                        <QuickQuantityInput
-                                          value={item.quantity}
-                                          onChange={(qty) =>
-                                            updateLineItem.mutate({
-                                              itemId: item.id,
-                                              updates: { quantity: qty },
-                                            })
-                                          }
-                                          min={1}
-                                          step={Math.max(1, Math.round(item.quantity * 0.1))}
-                                          debounceMs={800}
-                                          showQuickControls={true}
-                                        />
-                                      </TableCell>
-                                      <TableCell>
-                                        <Select
-                                          value={item.environment}
-                                          onValueChange={(v) =>
-                                            updateLineItem.mutate({
-                                              itemId: item.id,
-                                              updates: { environment: v as 'production' | 'reference' },
-                                            })
-                                          }
-                                        >
-                                          <SelectTrigger className="w-28">
-                                            <SelectValue />
-                                          </SelectTrigger>
-                                          <SelectContent>
-                                            <SelectItem value="production">Production</SelectItem>
-                                            <SelectItem value="reference">Reference</SelectItem>
-                                          </SelectContent>
-                                        </Select>
-                                      </TableCell>
-                                      <TableCell className="text-right">
-                                        {item.list_price ? formatCurrency(item.list_price) : '-'}
-                                      </TableCell>
-                                      <TableCell className="text-right text-green-600">
-                                        {item.total_discount_pct ? `-${formatPercent(item.total_discount_pct)}` : '-'}
-                                      </TableCell>
-                                      <TableCell className="text-right font-medium">
-                                        {item.unit_price ? (
-                                          <div>
-                                            <span>{formatCurrency(item.unit_price)}</span>
-                                            {item.sku?.unit?.startsWith('per ') && (
-                                              <div className="text-xs text-muted-foreground font-normal">{item.sku.unit}</div>
-                                            )}
-                                          </div>
-                                        ) : '-'}
-                                      </TableCell>
-                                      <TableCell className="text-right font-medium">
-                                        {item.monthly_total ? formatCurrency(item.monthly_total) : '-'}
-                                      </TableCell>
-                                      <TableCell>
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          onClick={() => deleteLineItem.mutate(item.id)}
-                                        >
-                                          <Trash2 className="h-4 w-4 text-destructive" />
-                                        </Button>
+                                    <TableRow key={`comp-${app}-${comp}`} className="hover:bg-transparent">
+                                      <TableCell colSpan={8} className="py-1 pl-8">
+                                        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+                                          {comp}
+                                        </span>
                                       </TableCell>
                                     </TableRow>
                                   )
+
+                                  if (compBase.length > 0) {
+                                    rows.push(renderSubGroupHeader(`${app}-${comp}-base`, 'Base Charge', 'pl-12'))
+                                    compBase.forEach(item => rows.push(renderItemRow(item)))
+                                  }
+                                  if (compUsage.length > 0) {
+                                    rows.push(renderSubGroupHeader(`${app}-${comp}-usage`, 'Usage', 'pl-12'))
+                                    compUsage.forEach(item => rows.push(renderItemRow(item)))
+                                  }
+                                  if (compDirect.length > 0) {
+                                    rows.push(renderSubGroupHeader(`${app}-${comp}-direct`, 'Direct Costs', 'pl-12'))
+                                    compDirect.forEach(item => rows.push(renderItemRow(item, true)))
+                                  }
                                 }
                               }
+                            }
 
-                              renderSubGroup('Base Charges', baseItems)
-                              renderSubGroup('Usage', usageItems)
-                              renderSubGroup('Direct Costs', directCostItems, true)
+                            // ── 3. Fallback: items with no application (CNO etc.) ──────────────
+                            if (otherItems.length > 0) {
+                              const categoryOrder: Array<'cas' | 'cno' | 'ccs' | 'default'> = ['cas', 'cno', 'default']
+                              const categoryLabels: Record<string, string> = { cas: 'CAS', cno: 'CNO', default: 'Default' }
+
+                              for (const cat of categoryOrder) {
+                                const catItems = otherItems.filter(i => (i.sku?.category || 'default') === cat)
+                                if (catItems.length === 0) continue
+
+                                rows.push(
+                                  <TableRow key={`cat-${cat}`} className="bg-muted/50 hover:bg-muted/50">
+                                    <TableCell colSpan={8} className="py-1.5 pl-4">
+                                      <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                        {categoryLabels[cat]}
+                                      </span>
+                                    </TableCell>
+                                  </TableRow>
+                                )
+
+                                const baseItems = catItems.filter(i => i.sku?.is_base_charge)
+                                const usageItems = catItems.filter(i => !i.sku?.is_base_charge && !i.sku?.is_direct_cost)
+                                const directItems = catItems.filter(i => !i.sku?.is_base_charge && i.sku?.is_direct_cost)
+
+                                if (baseItems.length > 0) {
+                                  rows.push(renderSubGroupHeader(`${cat}-base`, 'Base Charges'))
+                                  baseItems.forEach(item => rows.push(renderItemRow(item)))
+                                }
+                                if (usageItems.length > 0) {
+                                  rows.push(renderSubGroupHeader(`${cat}-usage`, 'Usage'))
+                                  usageItems.forEach(item => rows.push(renderItemRow(item)))
+                                }
+                                if (directItems.length > 0) {
+                                  rows.push(renderSubGroupHeader(`${cat}-direct`, 'Direct Costs'))
+                                  directItems.forEach(item => rows.push(renderItemRow(item, true)))
+                                }
+                              }
                             }
 
                             return rows
