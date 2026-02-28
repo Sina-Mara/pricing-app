@@ -1468,7 +1468,8 @@ export default function QuoteBuilder() {
                               if (catItems.length === 0) continue
 
                               const baseItems = catItems.filter(i => i.sku?.is_base_charge)
-                              const usageItems = catItems.filter(i => !i.sku?.is_base_charge)
+                              const usageItems = catItems.filter(i => !i.sku?.is_base_charge && !i.sku?.is_direct_cost)
+                              const directCostItems = catItems.filter(i => !i.sku?.is_base_charge && i.sku?.is_direct_cost)
 
                               // Category header
                               rows.push(
@@ -1481,7 +1482,7 @@ export default function QuoteBuilder() {
                                 </TableRow>
                               )
 
-                              const renderSubGroup = (label: string, subItems: typeof items) => {
+                              const renderSubGroup = (label: string, subItems: typeof items, isDirectCost = false) => {
                                 if (subItems.length === 0) return
                                 rows.push(
                                   <TableRow key={`${cat}-${label}`} className="hover:bg-transparent">
@@ -1494,10 +1495,17 @@ export default function QuoteBuilder() {
                                 )
                                 for (const item of subItems) {
                                   rows.push(
-                                    <TableRow key={item.id}>
+                                    <TableRow key={item.id} className={isDirectCost ? 'bg-amber-50/40 dark:bg-amber-950/20' : undefined}>
                                       <TableCell>
                                         <div>
-                                          <div className="font-mono text-sm">{item.sku?.code}</div>
+                                          <div className="flex items-center gap-2">
+                                            <span className="font-mono text-sm">{item.sku?.code}</span>
+                                            {isDirectCost && (
+                                              <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+                                                pass-through
+                                              </span>
+                                            )}
+                                          </div>
                                           <div className="text-sm text-muted-foreground">
                                             {item.sku?.description}
                                           </div>
@@ -1572,6 +1580,7 @@ export default function QuoteBuilder() {
 
                               renderSubGroup('Base Charges', baseItems)
                               renderSubGroup('Usage', usageItems)
+                              renderSubGroup('Direct Costs', directCostItems, true)
                             }
 
                             return rows
