@@ -6,6 +6,7 @@ export type EnvironmentType = 'production' | 'reference'
 export type QuoteStatus = 'draft' | 'pending' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'ordered'
 export type PackageStatus = 'new' | 'ordered' | 'existing' | 'cancelled'
 export type QuoteType = 'commitment' | 'pay_per_use'
+export type SolutionWrapper = 'standard' | 'lacs' | 'tisp' | 'rpg' | 'mvno'
 
 export interface Sku {
   id: string
@@ -91,6 +92,7 @@ export interface Quote {
   customer_id: string | null
   status: QuoteStatus
   quote_type: QuoteType
+  solution_wrapper: SolutionWrapper
   title: string | null
   notes: string | null
   valid_until: string | null

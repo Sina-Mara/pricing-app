@@ -65,6 +65,7 @@ import type {
   Sku,
   QuoteStatus,
   QuoteType,
+  SolutionWrapper,
   CalculatePricingResponse,
   ForecastSkuMapping,
   ForecastKpiType,
@@ -279,6 +280,7 @@ export default function QuoteBuilder() {
     title: '',
     status: 'draft' as QuoteStatus,
     quote_type: (locationState?.quoteType || 'commitment') as QuoteType,
+    solution_wrapper: 'standard' as SolutionWrapper,
     valid_until: '',
     use_aggregated_pricing: true,
     base_usage_ratio: 0.60,
@@ -293,6 +295,7 @@ export default function QuoteBuilder() {
         title: quote.title || '',
         status: quote.status,
         quote_type: quote.quote_type || 'commitment',
+        solution_wrapper: (quote.solution_wrapper as SolutionWrapper) || 'standard',
         valid_until: quote.valid_until || '',
         use_aggregated_pricing: quote.use_aggregated_pricing,
         base_usage_ratio: quote.base_usage_ratio ?? 0.60,
@@ -391,6 +394,7 @@ export default function QuoteBuilder() {
           title: formData.title || null,
           status: formData.status,
           quote_type: formData.quote_type,
+          solution_wrapper: formData.solution_wrapper,
           valid_until: formData.valid_until || null,
           use_aggregated_pricing: useAggregatedPricing,
           base_usage_ratio: formData.base_usage_ratio,
@@ -535,6 +539,7 @@ export default function QuoteBuilder() {
           title: formData.title || null,
           status: formData.status,
           quote_type: formData.quote_type,
+          solution_wrapper: formData.solution_wrapper,
           valid_until: formData.valid_until || null,
           use_aggregated_pricing: formData.use_aggregated_pricing,
           base_usage_ratio: formData.base_usage_ratio,
@@ -804,6 +809,7 @@ export default function QuoteBuilder() {
           title: formData.title || null,
           status: formData.status,
           quote_type: formData.quote_type,
+          solution_wrapper: formData.solution_wrapper,
           valid_until: formData.valid_until || null,
           use_aggregated_pricing: formData.use_aggregated_pricing,
           base_usage_ratio: formData.base_usage_ratio,
@@ -1094,6 +1100,26 @@ export default function QuoteBuilder() {
                         <span>Pay-per-Use</span>
                       </div>
                     </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Solution Wrapper Selector */}
+              <div className="space-y-2">
+                <Label>Solution Wrapper</Label>
+                <Select
+                  value={formData.solution_wrapper}
+                  onValueChange={(v) => setFormData(prev => ({ ...prev, solution_wrapper: v as SolutionWrapper }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="standard">Standard</SelectItem>
+                    <SelectItem value="lacs">LACS</SelectItem>
+                    <SelectItem value="tisp">TISP</SelectItem>
+                    <SelectItem value="rpg">RPG</SelectItem>
+                    <SelectItem value="mvno">MVNO</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
