@@ -1544,7 +1544,14 @@ export default function QuoteBuilder() {
                                         {item.total_discount_pct ? `-${formatPercent(item.total_discount_pct)}` : '-'}
                                       </TableCell>
                                       <TableCell className="text-right font-medium">
-                                        {item.unit_price ? formatCurrency(item.unit_price) : '-'}
+                                        {item.unit_price ? (
+                                          <div>
+                                            <span>{formatCurrency(item.unit_price)}</span>
+                                            {item.sku?.unit?.startsWith('per ') && (
+                                              <div className="text-xs text-muted-foreground font-normal">{item.sku.unit}</div>
+                                            )}
+                                          </div>
+                                        ) : '-'}
                                       </TableCell>
                                       <TableCell className="text-right font-medium">
                                         {item.monthly_total ? formatCurrency(item.monthly_total) : '-'}
