@@ -193,7 +193,11 @@ export function boundsFromModel(model: PricingModel): number[] {
 // PRICE CALCULATION FROM MODEL
 // ============================================================================
 
-export function priceFromModel(model: PricingModel, qty: number): number {
+export function priceFromModel(model: PricingModel, qty: number, isDirectCost?: boolean): number {
+  if (isDirectCost) {
+    return model.base_unit_price;
+  }
+
   const q = Math.max(qty, model.base_qty);
   const factorPerDouble = 1 - model.per_double_discount;
 
@@ -426,8 +430,13 @@ export function applyBaseUsageRatio(
   price: number,
   isBaseCharge: boolean,
   category: string,
-  ratio: number
+  ratio: number,
+  isDirectCost?: boolean
 ): { adjustedPrice: number; ratioFactor: number | null } {
+  if (isDirectCost) {
+    return { adjustedPrice: price, ratioFactor: null };
+  }
+
   if (category !== 'cas') {
     return { adjustedPrice: price, ratioFactor: null };
   }

@@ -14,6 +14,7 @@ export interface Sku {
   unit: string
   category: SkuCategory
   is_base_charge: boolean
+  is_direct_cost: boolean
   is_active: boolean
   created_at: string
   updated_at: string
@@ -159,6 +160,7 @@ export interface SkuPricingSummary {
   unit: string
   category: SkuCategory
   is_base_charge: boolean
+  is_direct_cost: boolean
   pricing_mode: PricingMode | null
   base_unit_price: number | null
   per_double_discount: number | null

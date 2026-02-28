@@ -20,6 +20,7 @@ interface Sku {
   unit: string;
   category: 'default' | 'cas' | 'cno' | 'ccs';
   is_base_charge: boolean;
+  is_direct_cost: boolean;
 }
 
 interface PricingModel {
@@ -738,14 +739,25 @@ function calculateItemPricingWithPhases(
       result.total_discount_pct = result.term_discount_pct;
     }
 
-    // Apply base/usage ratio for CAS SKUs
-    if (sku.category === 'cas') {
+    // Apply base/usage ratio for CAS SKUs — skipped for direct-cost SKUs
+    if (sku.category === 'cas' && !sku.is_direct_cost) {
       const ratioFactor = round4(baseUsageRatio / CAS_REFERENCE_BASE_RATIO);
       result.base_charge = round2(result.base_charge * ratioFactor);
       result.monthly_total = result.base_charge;
       result.unit_price = result.base_charge;
       result.ratio_factor = ratioFactor;
     }
+  } else if (sku.is_direct_cost) {
+    // Direct-cost usage SKU: use base rate exactly, no discounts
+    const unitPrice = findUnitPrice(ctx, sku.id, 1);
+    result.list_price = unitPrice;
+    result.unit_price = unitPrice;
+    result.volume_discount_pct = 0;
+    result.term_discount_pct = 0;
+    result.env_factor = 1;
+    result.total_discount_pct = 0;
+    result.usage_total = round2(unitPrice * qty);
+    result.monthly_total = result.usage_total;
   } else {
     // Usage-based pricing
 
