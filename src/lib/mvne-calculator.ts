@@ -4,7 +4,8 @@
 // ============================================================================
 
 import type { MvneCapacityInputs, MvneExternalCosts } from '@/types/database';
-import { round2, round4 } from '@/lib/pricing';
+import { round2, round4, priceFromModel } from '@/lib/pricing';
+import type { PricingModel } from '@/lib/pricing';
 
 // ============================================================================
 // CONSTANTS
@@ -63,6 +64,7 @@ export interface ComponentBreakdown {
   label: string;
   type: ComponentType;
   quantity?: number;
+  listPrice?: number;
   unitPrice?: number;
   cost: number;
 }
@@ -122,15 +124,15 @@ export function throughputToMonthlyGb(throughputMbps: number): number {
 /**
  * Calculate the full MVNE cost breakdown for a given set of inputs.
  *
- * @param skuQuantities   - User-entered quantities keyed by usage SKU code
- * @param skuUnitPrices   - Unit prices from DB (pricing_models.base_unit_price)
- * @param baseCharges     - Fixed MRC values from DB (base_charges), keyed by SKU code
- * @param externalCosts   - Manual external cost entries (infrastructure, GRX, eSIM)
- * @param capacityInputs  - Capacity parameters; num_mvnos and aggregate_throughput_mbps are used
+ * @param skuQuantities     - User-entered quantities keyed by usage SKU code
+ * @param skuPricingModels  - Full pricing models from DB, keyed by SKU code
+ * @param baseCharges       - Fixed MRC values from DB (base_charges), keyed by SKU code
+ * @param externalCosts     - Manual external cost entries (infrastructure, GRX, eSIM)
+ * @param capacityInputs    - Capacity parameters; num_mvnos and aggregate_throughput_mbps are used
  */
 export function calculateMvnePricing(
   skuQuantities: Record<string, number>,
-  skuUnitPrices: Record<string, number>,
+  skuPricingModels: Record<string, PricingModel>,
   baseCharges: Record<string, number>,
   externalCosts: MvneExternalCosts,
   capacityInputs: MvneCapacityInputs,
@@ -145,7 +147,9 @@ export function calculateMvnePricing(
 
   for (const skuCode of MVNE_USAGE_SKUS) {
     const qty = skuQuantities[skuCode] ?? 0;
-    const unitPrice = skuUnitPrices[skuCode] ?? 0;
+    const model = skuPricingModels[skuCode];
+    const listPrice = model?.base_unit_price ?? 0;
+    const unitPrice = model && qty > 0 ? priceFromModel(model, qty) : listPrice;
     const cost = round2(qty * unitPrice);
 
     totalUsageCosts += cost;
@@ -155,6 +159,7 @@ export function calculateMvnePricing(
       label: SKU_LABELS[skuCode] ?? skuCode,
       type: 'usage',
       quantity: qty,
+      listPrice,
       unitPrice,
       cost,
     });

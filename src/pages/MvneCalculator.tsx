@@ -25,7 +25,9 @@ import {
 import { useToast } from '@/hooks/use-toast'
 import { formatCurrency } from '@/lib/utils'
 import { Save, FolderOpen, Trash2 } from 'lucide-react'
-import type { Sku, BaseCharge, PricingModel, MvneCapacityInputs, MvneExternalCosts } from '@/types/database'
+import type { Sku, BaseCharge, MvneCapacityInputs, MvneExternalCosts } from '@/types/database'
+import type { PricingModel } from '@/lib/pricing'
+import { priceFromModel } from '@/lib/pricing'
 import {
   calculateMvnePricing,
   MVNE_USAGE_SKUS,
@@ -114,7 +116,7 @@ export default function MvneCalculator() {
           .in('code', allSkuCodes),
         supabase
           .from('pricing_models')
-          .select('sku_id, base_unit_price'),
+          .select('sku_id, base_qty, base_unit_price, per_double_discount, floor_unit_price, steps, mode, max_qty, breakpoints'),
         supabase
           .from('base_charges')
           .select('sku_id, base_mrc'),
@@ -125,17 +127,17 @@ export default function MvneCalculator() {
       if (baseChargesRes.error) throw baseChargesRes.error
 
       const skus = skusRes.data as Pick<Sku, 'id' | 'code' | 'description' | 'unit'>[]
-      const pricing = pricingRes.data as Pick<PricingModel, 'sku_id' | 'base_unit_price'>[]
+      const pricing = pricingRes.data as PricingModel[]
       const charges = baseChargesRes.data as Pick<BaseCharge, 'sku_id' | 'base_mrc'>[]
 
       // Build lookup maps
       const skuById = new Map(skus.map((s) => [s.id, s]))
-      const unitPrices: Record<string, number> = {}
+      const pricingModels: Record<string, PricingModel> = {}
       const baseMrcs: Record<string, number> = {}
 
       for (const p of pricing) {
         const sku = skuById.get(p.sku_id)
-        if (sku) unitPrices[sku.code] = p.base_unit_price
+        if (sku) pricingModels[sku.code] = p
       }
 
       for (const c of charges) {
@@ -143,11 +145,11 @@ export default function MvneCalculator() {
         if (sku) baseMrcs[sku.code] = c.base_mrc
       }
 
-      return { skus, unitPrices, baseMrcs }
+      return { skus, pricingModels, baseMrcs }
     },
   })
 
-  const unitPrices = skuData?.unitPrices ?? {}
+  const pricingModels = skuData?.pricingModels ?? {}
   const baseMrcs = skuData?.baseMrcs ?? {}
 
   // ---- Persistence hooks ----
@@ -157,8 +159,8 @@ export default function MvneCalculator() {
 
   // ---- Calculation (reactive) ----
   const result = useMemo(
-    () => calculateMvnePricing(skuQuantities, unitPrices, baseMrcs, externalCosts, capacity),
-    [skuQuantities, unitPrices, baseMrcs, externalCosts, capacity]
+    () => calculateMvnePricing(skuQuantities, pricingModels, baseMrcs, externalCosts, capacity),
+    [skuQuantities, pricingModels, baseMrcs, externalCosts, capacity]
   )
 
   // ---- Handlers ----
@@ -341,15 +343,19 @@ export default function MvneCalculator() {
                     <TableHead>Component</TableHead>
                     <TableHead className="w-32">Quantity</TableHead>
                     <TableHead className="w-24">Unit</TableHead>
-                    <TableHead className="w-32 text-right">Unit Price</TableHead>
+                    <TableHead className="w-28 text-right">List Price</TableHead>
+                    <TableHead className="w-28 text-right">Vol. Price</TableHead>
                     <TableHead className="w-36 text-right">Monthly Cost</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {MVNE_USAGE_SKUS.map((code) => {
                     const qty = skuQuantities[code] ?? 0
-                    const price = unitPrices[code] ?? 0
-                    const cost = qty * price
+                    const model = pricingModels[code]
+                    const listPrice = model?.base_unit_price ?? 0
+                    const volPrice = model && qty > 0 ? priceFromModel(model, qty) : listPrice
+                    const hasDiscount = qty > 0 && volPrice < listPrice
+                    const cost = qty * volPrice
                     return (
                       <TableRow key={code}>
                         <TableCell className="font-medium">{SKU_DISPLAY[code]}</TableCell>
@@ -365,8 +371,11 @@ export default function MvneCalculator() {
                         <TableCell className="text-muted-foreground text-sm">
                           {SKU_UNITS[code]}
                         </TableCell>
-                        <TableCell className="text-right font-mono text-sm">
-                          {formatCurrency(price)}
+                        <TableCell className={`text-right font-mono text-sm ${hasDiscount ? 'line-through text-muted-foreground' : ''}`}>
+                          {formatCurrency(listPrice)}
+                        </TableCell>
+                        <TableCell className={`text-right font-mono text-sm ${hasDiscount ? 'text-green-600 font-medium' : ''}`}>
+                          {formatCurrency(volPrice)}
                         </TableCell>
                         <TableCell className="text-right font-mono font-medium">
                           {formatCurrency(cost)}
