@@ -96,12 +96,13 @@ export interface SensitivityRow {
   numMvnos: number;
   perMvnoMrc: number;
   perGbRate: number;
+  costPerProducedGb: number;
 }
 
 export interface MvneCalculationResult {
   /** Sum of all base charges */
   totalBaseCharges: number;
-  /** Sum of all usage-based costs (shared + per-MVNO combined, for backward compat) */
+  /** Sum of all usage-based costs (shared + per-MVNO combined) */
   totalUsageCosts: number;
   /** Sum of shared usage SKU costs (split across MVNOs) */
   totalSharedUsageCosts: number;
@@ -117,18 +118,22 @@ export interface MvneCalculationResult {
   totalExternalCost: number;
   /** Total fixed pool = base + shared usage + external fixed (split across MVNOs) */
   totalFixedPool: number;
-  /** Grand total shared cost (platform + external) */
+  /** True total platform cost = fixedPool + (perMvnoUsage × N) + (perGb × totalGb) */
   totalSharedCost: number;
-  /** Per-MVNO monthly recurring charge (fixed costs only / N) */
+  /** Per-MVNO monthly recurring charge = fixedPool / N (fixed costs only) */
   perMvnoMrc: number;
-  /** Per-GB rate = sum of all per-GB external costs */
+  /** Blended per-GB rate = (perMvnoUsageCosts / estimatedGbPerMvno) + externalPerGb */
   perGbRate: number;
   /** Estimated total monthly GB from aggregate throughput */
   totalMonthlyGb: number;
+  /** Estimated monthly GB per MVNO = totalMonthlyGb / N */
+  estimatedGbPerMvno: number;
   /** Number of MVNOs used in the calculation */
   numMvnos: number;
   /** Line-item breakdown of every cost component */
   componentBreakdown: ComponentBreakdown[];
+  /** All-in cost per produced GB = (perMvnoMrc + perGbRate × estimatedGb) / estimatedGb */
+  costPerProducedGb: number;
   /** Sensitivity table showing per-MVNO costs at various MVNO counts */
   sensitivityTable: SensitivityRow[];
 }
@@ -213,7 +218,7 @@ export function computeSkuQuantities(capacity: MvneCapacityInputs): Record<strin
     CNO_Sites: cennsoCnoSites,
     CNO_Nodes: capacity.nodes_per_cno_site * cennsoCnoSites,
     SMC_sessions: capacity.subs_per_mvno * capacity.parallel_take_rate,
-    UPG_Bandwidth: capacity.aggregate_throughput_mbps,
+    UPG_Bandwidth: capacity.aggregate_throughput_mbps / Math.max(1, capacity.num_mvnos),
     TPOSS_UDR: capacity.subs_per_mvno,
     TPOSS_PCS: capacity.subs_per_mvno * capacity.take_rate_pcs_udr,
     TPOSS_CCS: capacity.subs_per_mvno * capacity.take_rate_ccs_udr,
@@ -227,6 +232,7 @@ export const AUTO_POPULATED_SKUS = new Set(Object.keys(computeSkuQuantities({
   breakout_capacity_mbps: 0, num_grx_sites: 0, apns_per_mvno: 0,
   vcores_per_breakout: 0, vcores_per_pgw: 0,
   take_rate_pcs_udr: 0, take_rate_ccs_udr: 0, nodes_per_cno_site: 0,
+  gb_per_sub_per_month: 0,
 })));
 
 // ============================================================================
@@ -248,7 +254,7 @@ export function calculateMvnePricing(
   capacityInputs: MvneCapacityInputs,
   skuDiscounts: Record<string, number> = {},
 ): MvneCalculationResult {
-  const { num_mvnos, aggregate_throughput_mbps } = capacityInputs;
+  const { num_mvnos, aggregate_throughput_mbps, subs_per_mvno, gb_per_sub_per_month } = capacityInputs;
   const breakdown: ComponentBreakdown[] = [];
 
   // ------------------------------------------------------------------
@@ -363,26 +369,41 @@ export function calculateMvnePricing(
   // ------------------------------------------------------------------
   // 6. Fixed pool and per-MVNO split
   //    sharedPool = base + shared usage + external fixed  (split by N)
-  //    perMvnoMrc = sharedPool / N + per-MVNO usage       (per-MVNO stays constant)
+  //    perMvnoMrc = sharedPool / N                        (fixed costs only)
   // ------------------------------------------------------------------
   const totalFixedPool = round2(totalBaseCharges + totalSharedUsageCosts + totalExternalFixed);
-  const totalSharedCost = round2(totalFixedPool + totalPerMvnoUsageCosts + totalExternalPerGb * totalMonthlyGb);
-
   const effectiveMvnos = Math.max(1, num_mvnos);
-  const perMvnoMrc = round2(totalFixedPool / effectiveMvnos + totalPerMvnoUsageCosts);
+  const perMvnoMrc = round2(totalFixedPool / effectiveMvnos);
 
   // ------------------------------------------------------------------
-  // 7. Per-GB rate = sum of per-GB costs (constant across MVNO counts)
+  // 7. Blended per-GB rate
+  //    Amortize per-MVNO usage costs over estimated GB per MVNO
+  //    (subscriber-based: subs × gb_per_sub), then add external per-GB.
   // ------------------------------------------------------------------
-  const perGbRate = round4(totalExternalPerGb);
+  const estimatedGbPerMvno = round4(subs_per_mvno * gb_per_sub_per_month);
+  const usageCostPerGb = estimatedGbPerMvno > 0 ? totalPerMvnoUsageCosts / estimatedGbPerMvno : 0;
+  const perGbRate = round4(usageCostPerGb + totalExternalPerGb);
 
   // ------------------------------------------------------------------
-  // 8. Sensitivity table
+  // 7b. Total platform cost (consistent scope: all costs × all MVNOs)
+  // ------------------------------------------------------------------
+  const totalEstimatedGb = round4(estimatedGbPerMvno * effectiveMvnos);
+  const totalSharedCost = round2(totalFixedPool + (totalPerMvnoUsageCosts * effectiveMvnos) + (totalExternalPerGb * totalEstimatedGb));
+
+  // ------------------------------------------------------------------
+  // 8. All-in cost per produced GB (for slides / marketing)
+  //    = total MVNO monthly cost / estimated GB
+  // ------------------------------------------------------------------
+  const totalMvnoMonthlyCost = perMvnoMrc + perGbRate * estimatedGbPerMvno;
+  const costPerProducedGb = estimatedGbPerMvno > 0 ? round4(totalMvnoMonthlyCost / estimatedGbPerMvno) : 0;
+
+  // ------------------------------------------------------------------
+  // 9. Sensitivity table
   // ------------------------------------------------------------------
   const sensitivityTable = buildSensitivityTable(
     totalFixedPool,
-    totalExternalPerGb,
-    totalPerMvnoUsageCosts,
+    perGbRate,
+    estimatedGbPerMvno,
   );
 
   return {
@@ -399,7 +420,9 @@ export function calculateMvnePricing(
     perMvnoMrc,
     perGbRate,
     totalMonthlyGb,
+    estimatedGbPerMvno,
     numMvnos: effectiveMvnos,
+    costPerProducedGb,
     componentBreakdown: breakdown,
     sensitivityTable,
   };
@@ -410,25 +433,27 @@ export function calculateMvnePricing(
 // ============================================================================
 
 /**
- * Build a sensitivity table showing per-MVNO MRC and per-GB rate
+ * Build a sensitivity table showing per-MVNO MRC and blended per-GB rate
  * for a range of MVNO counts.
  *
- * Per-GB rate is constant (doesn't depend on N).
- * Per-MVNO MRC = totalFixedPool / N + perMvnoUsageCosts.
- * The per-MVNO usage costs stay constant across N — only the shared pool varies.
+ * Per-MVNO MRC = totalFixedPool / N (fixed costs only).
+ * Per-GB rate is constant across N (subscriber-based estimate is per-MVNO).
  */
 export function buildSensitivityTable(
   totalFixedPool: number,
-  totalExternalPerGb: number,
-  perMvnoUsageCosts: number,
+  perGbRate: number,
+  estimatedGbPerMvno: number,
   mvnoCounts: readonly number[] = SENSITIVITY_MVNO_COUNTS,
 ): SensitivityRow[] {
   return mvnoCounts.map((n) => {
     const effectiveN = Math.max(1, n);
+    const mrc = round2(totalFixedPool / effectiveN);
+    const totalMonthlyCost = mrc + perGbRate * estimatedGbPerMvno;
     return {
       numMvnos: effectiveN,
-      perMvnoMrc: round2(totalFixedPool / effectiveN + perMvnoUsageCosts),
-      perGbRate: round4(totalExternalPerGb),
+      perMvnoMrc: mrc,
+      perGbRate,
+      costPerProducedGb: estimatedGbPerMvno > 0 ? round4(totalMonthlyCost / estimatedGbPerMvno) : 0,
     };
   });
 }

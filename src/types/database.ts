@@ -510,6 +510,7 @@ export interface MvneCapacityInputs {
   take_rate_pcs_udr: number
   take_rate_ccs_udr: number
   nodes_per_cno_site: number
+  gb_per_sub_per_month: number
 }
 
 export interface MvneExternalCostItem {

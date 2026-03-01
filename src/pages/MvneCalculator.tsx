@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef, Fragment } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -35,10 +35,7 @@ import {
   computeSkuQuantities,
   AUTO_POPULATED_SKUS,
   MVNE_USAGE_SKUS,
-  MVNE_SHARED_USAGE_SKUS,
-  MVNE_PER_MVNO_USAGE_SKUS,
   MVNE_BASE_SKUS,
-  throughputToMonthlyGb,
 } from '@/lib/mvne-calculator'
 import {
   useMvneConfigs,
@@ -64,6 +61,7 @@ const DEFAULT_CAPACITY: MvneCapacityInputs = {
   take_rate_pcs_udr: 0,
   take_rate_ccs_udr: 0,
   nodes_per_cno_site: 0,
+  gb_per_sub_per_month: 5,
 }
 
 const DEFAULT_EXTERNAL: MvneExternalCosts = createDefaultExternalCosts()
@@ -102,6 +100,26 @@ const SKU_DISPLAY: Record<string, string> = {
   CNO_24_7: 'CNO 24/7 Support',
   CNO_central: 'CNO Central Services',
 }
+
+// ============================================================================
+// CATEGORY GROUPINGS
+// ============================================================================
+
+const USAGE_CATEGORIES = [
+  { name: 'Cennso', label: 'Cennso (CAS)', skus: ['Cennso_Sites', 'Cennso_vCores', 'Cennso_CoreCluster'], shared: true },
+  { name: 'SMC', label: 'SMC', skus: ['SMC_sessions'], shared: false },
+  { name: 'UPG', label: 'UPG', skus: ['UPG_Bandwidth'], shared: false },
+  { name: 'TPOSS', label: 'TPOSS', skus: ['TPOSS_UDR', 'TPOSS_PCS', 'TPOSS_CCS'], shared: false },
+  { name: 'CNO', label: 'CNO', skus: ['CNO_Sites', 'CNO_Nodes', 'CNO_DB'], shared: true },
+] as const
+
+const BASE_CATEGORIES = [
+  { name: 'Cennso', label: 'Cennso (CAS)', skus: ['Cennso_base'] },
+  { name: 'SMC', label: 'SMC', skus: ['SMC_base'] },
+  { name: 'UPG', label: 'UPG', skus: ['UPG_base'] },
+  { name: 'TPOSS', label: 'TPOSS', skus: ['TPOSS_base'] },
+  { name: 'CNO', label: 'CNO', skus: ['CNO_base', 'CNO_24_7', 'CNO_central'] },
+] as const
 
 // ============================================================================
 // COMPONENT
@@ -198,6 +216,38 @@ export default function MvneCalculator() {
     () => calculateMvnePricing(skuQuantities, pricingModels, baseMrcs, externalCosts, capacity, skuDiscounts),
     [skuQuantities, pricingModels, baseMrcs, externalCosts, capacity, skuDiscounts]
   )
+
+  // ---- Per-category cost breakdown (for the output panel) ----
+  // Cennso = umbrella for all CNF SKUs (Cennso, SMC, UPG, TPOSS)
+  // CNO = separate platform
+  // External = external costs
+  const categoryBreakdown = useMemo(() => {
+    const CENNSO_PREFIXES = new Set(['Cennso', 'SMC', 'UPG', 'TPOSS'])
+    const cats: Record<string, { base: number; shared: number; perMvno: number; extFixed: number; extPerGb: number }> = {
+      Cennso: { base: 0, shared: 0, perMvno: 0, extFixed: 0, extPerGb: 0 },
+      CNO: { base: 0, shared: 0, perMvno: 0, extFixed: 0, extPerGb: 0 },
+      External: { base: 0, shared: 0, perMvno: 0, extFixed: 0, extPerGb: 0 },
+    }
+    for (const c of result.componentBreakdown) {
+      if (c.type === 'external_fixed') {
+        cats.External.extFixed += c.cost
+      } else if (c.type === 'external_per_gb') {
+        cats.External.extPerGb += c.unitPrice ?? 0
+      } else {
+        const prefix = c.skuCode.split('_')[0]
+        const catName = CENNSO_PREFIXES.has(prefix) ? 'Cennso' : 'CNO'
+        if (c.type === 'base') cats[catName].base += c.cost
+        else if (c.type === 'shared_usage') cats[catName].shared += c.cost
+        else if (c.type === 'per_mvno_usage') cats[catName].perMvno += c.cost
+      }
+    }
+    return ['Cennso', 'CNO', 'External'].map((name) => ({
+      name,
+      ...cats[name]!,
+      totalFixed: cats[name]!.base + cats[name]!.shared + cats[name]!.extFixed,
+      totalPerMvno: cats[name]!.perMvno,
+    }))
+  }, [result.componentBreakdown])
 
   // ---- Handlers ----
   const updateCapacity = useCallback(
@@ -334,8 +384,6 @@ export default function MvneCalculator() {
     }
   }
 
-  const totalMonthlyGb = throughputToMonthlyGb(capacity.aggregate_throughput_mbps)
-
   // ---- Render ----
   return (
     <div className="p-6 space-y-6">
@@ -389,6 +437,12 @@ export default function MvneCalculator() {
                   label="Subs per MVNO"
                   value={capacity.subs_per_mvno}
                   onChange={(v) => updateCapacity('subs_per_mvno', v)}
+                />
+                <NumberField
+                  label="GB / Sub / Month"
+                  value={capacity.gb_per_sub_per_month}
+                  onChange={(v) => updateCapacity('gb_per_sub_per_month', v)}
+                  step={0.1}
                 />
                 <NumberField
                   label="Parallel Take Rate"
@@ -480,62 +534,50 @@ export default function MvneCalculator() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {/* Shared Infrastructure section */}
-                  <TableRow className="bg-muted/30 hover:bg-muted/30">
-                    <TableCell colSpan={7} className="py-2 font-semibold text-xs uppercase tracking-wide text-muted-foreground">
-                      Shared Infrastructure (split across {capacity.num_mvnos} MVNOs)
-                    </TableCell>
-                  </TableRow>
-                  {MVNE_SHARED_USAGE_SKUS.map((code) => {
-                    const isAuto = AUTO_POPULATED_SKUS.has(code)
-                    const isOverridden = isAuto && skuOverrides[code]
-                    const isAutoActive = isAuto && !isOverridden
-                    return (
-                      <SkuRow
-                        key={code}
-                        code={code}
-                        qty={skuQuantities[code] ?? 0}
-                        model={pricingModels[code]}
-                        disc={skuDiscounts[code] ?? 0}
-                        isAutoActive={isAutoActive}
-                        isOverridden={!!isOverridden}
-                        onQtyChange={updateSkuQty}
-                        onDiscChange={updateSkuDiscount}
-                        onReset={resetSkuOverride}
-                      />
-                    )
-                  })}
+                  {USAGE_CATEGORIES.map((cat) => (
+                    <Fragment key={cat.name}>
+                      <TableRow className="bg-muted/30 hover:bg-muted/30">
+                        <TableCell colSpan={7} className="py-2">
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-xs uppercase tracking-wide text-muted-foreground">
+                              {cat.label}
+                            </span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                              cat.shared
+                                ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                                : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+                            }`}>
+                              {cat.shared ? 'Shared' : 'Per-MVNO'}
+                            </span>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      {cat.skus.map((code) => {
+                        const isAuto = AUTO_POPULATED_SKUS.has(code)
+                        const isOverridden = isAuto && skuOverrides[code]
+                        const isAutoActive = isAuto && !isOverridden
+                        return (
+                          <SkuRow
+                            key={code}
+                            code={code}
+                            qty={skuQuantities[code] ?? 0}
+                            model={pricingModels[code]}
+                            disc={skuDiscounts[code] ?? 0}
+                            isAutoActive={isAutoActive}
+                            isOverridden={!!isOverridden}
+                            onQtyChange={updateSkuQty}
+                            onDiscChange={updateSkuDiscount}
+                            onReset={resetSkuOverride}
+                          />
+                        )
+                      })}
+                    </Fragment>
+                  ))}
                   <TableRow className="border-t font-medium">
                     <TableCell colSpan={6} className="text-muted-foreground">Shared Subtotal</TableCell>
                     <TableCell className="text-right font-mono">{formatCurrency(result.totalSharedUsageCosts)}</TableCell>
                   </TableRow>
-
-                  {/* Per-MVNO Usage section */}
-                  <TableRow className="bg-muted/30 hover:bg-muted/30">
-                    <TableCell colSpan={7} className="py-2 font-semibold text-xs uppercase tracking-wide text-muted-foreground">
-                      Per-MVNO Usage (not split)
-                    </TableCell>
-                  </TableRow>
-                  {MVNE_PER_MVNO_USAGE_SKUS.map((code) => {
-                    const isAuto = AUTO_POPULATED_SKUS.has(code)
-                    const isOverridden = isAuto && skuOverrides[code]
-                    const isAutoActive = isAuto && !isOverridden
-                    return (
-                      <SkuRow
-                        key={code}
-                        code={code}
-                        qty={skuQuantities[code] ?? 0}
-                        model={pricingModels[code]}
-                        disc={skuDiscounts[code] ?? 0}
-                        isAutoActive={isAutoActive}
-                        isOverridden={!!isOverridden}
-                        onQtyChange={updateSkuQty}
-                        onDiscChange={updateSkuDiscount}
-                        onReset={resetSkuOverride}
-                      />
-                    )
-                  })}
-                  <TableRow className="border-t font-medium">
+                  <TableRow className="font-medium">
                     <TableCell colSpan={6} className="text-muted-foreground">Per-MVNO Subtotal</TableCell>
                     <TableCell className="text-right font-mono">{formatCurrency(result.totalPerMvnoUsageCosts)}</TableCell>
                   </TableRow>
@@ -563,33 +605,42 @@ export default function MvneCalculator() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {MVNE_BASE_SKUS.map((code) => {
-                    const mrc = baseMrcs[code] ?? 0
-                    const disc = skuDiscounts[code] ?? 0
-                    const discountedMrc = mrc * (1 - disc / 100)
-                    return (
-                      <TableRow key={code}>
-                        <TableCell className="font-medium">{SKU_DISPLAY[code]}</TableCell>
-                        <TableCell className={`text-right font-mono text-sm ${disc > 0 ? 'line-through text-muted-foreground' : 'font-medium'}`}>
-                          {formatCurrency(mrc)}
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            type="number"
-                            min={0}
-                            max={100}
-                            step={1}
-                            value={disc || ''}
-                            onChange={(e) => updateSkuDiscount(code, parseFloat(e.target.value) || 0)}
-                            className="h-8"
-                          />
-                        </TableCell>
-                        <TableCell className={`text-right font-mono font-medium ${disc > 0 ? 'text-green-600' : ''}`}>
-                          {formatCurrency(discountedMrc)}
+                  {BASE_CATEGORIES.map((cat) => (
+                    <Fragment key={cat.name}>
+                      <TableRow className="bg-muted/30 hover:bg-muted/30">
+                        <TableCell colSpan={4} className="py-2 font-semibold text-xs uppercase tracking-wide text-muted-foreground">
+                          {cat.label}
                         </TableCell>
                       </TableRow>
-                    )
-                  })}
+                      {cat.skus.map((code) => {
+                        const mrc = baseMrcs[code] ?? 0
+                        const disc = skuDiscounts[code] ?? 0
+                        const discountedMrc = mrc * (1 - disc / 100)
+                        return (
+                          <TableRow key={code}>
+                            <TableCell className="font-medium">{SKU_DISPLAY[code]}</TableCell>
+                            <TableCell className={`text-right font-mono text-sm ${disc > 0 ? 'line-through text-muted-foreground' : 'font-medium'}`}>
+                              {formatCurrency(mrc)}
+                            </TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                min={0}
+                                max={100}
+                                step={1}
+                                value={disc || ''}
+                                onChange={(e) => updateSkuDiscount(code, parseFloat(e.target.value) || 0)}
+                                className="h-8"
+                              />
+                            </TableCell>
+                            <TableCell className={`text-right font-mono font-medium ${disc > 0 ? 'text-green-600' : ''}`}>
+                              {formatCurrency(discountedMrc)}
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </Fragment>
+                  ))}
                   <TableRow className="font-bold border-t-2">
                     <TableCell>Total Base Charges</TableCell>
                     <TableCell />
@@ -692,55 +743,103 @@ export default function MvneCalculator() {
             <CardHeader>
               <CardTitle>Per-MVNO Pricing</CardTitle>
               <CardDescription>
-                Fixed costs split across {capacity.num_mvnos} MVNOs + per-GB pass-through
+                Fixed costs split across {capacity.num_mvnos} MVNOs + blended per-GB usage rate
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="rounded-lg bg-primary/5 p-4 text-center">
                 <p className="text-sm text-muted-foreground mb-1">Base MRC per MVNO</p>
                 <p className="text-3xl font-bold">{formatCurrency(result.perMvnoMrc)}</p>
-                <p className="text-xs text-muted-foreground mt-1">Fixed costs / {capacity.num_mvnos} MVNOs</p>
+                <p className="text-xs text-muted-foreground mt-1">Shared fixed costs / {capacity.num_mvnos} MVNOs</p>
               </div>
               <div className="rounded-lg bg-primary/5 p-4 text-center">
-                <p className="text-sm text-muted-foreground mb-1">Per-GB Rate</p>
+                <p className="text-sm text-muted-foreground mb-1">Blended Per-GB Rate</p>
                 <p className="text-3xl font-bold">{formatCurrency(result.perGbRate)}</p>
-                <p className="text-xs text-muted-foreground mt-1">Sum of per-GB external costs</p>
+                <p className="text-xs text-muted-foreground mt-1">Usage + external per-GB over {result.estimatedGbPerMvno.toLocaleString()} GB/MVNO/mo</p>
+              </div>
+              <div className="rounded-lg bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900/40 p-4 text-center">
+                <p className="text-sm text-muted-foreground mb-1">Cost per Produced GB</p>
+                <p className="text-3xl font-bold text-green-700 dark:text-green-400">{formatCurrency(result.costPerProducedGb)}</p>
+                <p className="text-xs text-muted-foreground mt-1">All-in: base MRC + usage amortized over {result.estimatedGbPerMvno.toLocaleString()} GB/mo</p>
               </div>
               <Separator />
               <div className="space-y-2 text-sm">
+                {/* ---- Base MRC breakdown ---- */}
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Base MRC breakdown</p>
                 <div className="flex justify-between font-medium">
                   <span className="text-muted-foreground">Total Fixed Pool</span>
                   <span className="font-mono">{formatCurrency(result.totalFixedPool)}</span>
                 </div>
-                <div className="flex justify-between pl-4">
-                  <span className="text-muted-foreground">Base Charges</span>
-                  <span className="font-mono">{formatCurrency(result.totalBaseCharges)}</span>
-                </div>
-                <div className="flex justify-between pl-4">
-                  <span className="text-muted-foreground">Shared Usage</span>
-                  <span className="font-mono">{formatCurrency(result.totalSharedUsageCosts)}</span>
-                </div>
-                <div className="flex justify-between pl-4">
-                  <span className="text-muted-foreground">External Fixed</span>
-                  <span className="font-mono">{formatCurrency(result.totalExternalFixed)}</span>
-                </div>
+                {categoryBreakdown.map((cat) => {
+                  if (cat.totalFixed === 0) return null
+                  return (
+                    <div key={`fixed-${cat.name}`} className="space-y-0.5">
+                      <div className="flex justify-between pl-4">
+                        <span className="text-muted-foreground font-medium">{cat.name}</span>
+                        <span className="font-mono">{formatCurrency(cat.totalFixed)}</span>
+                      </div>
+                      {cat.base > 0 && (
+                        <div className="flex justify-between pl-8">
+                          <span className="text-muted-foreground/70 text-xs">Base charges</span>
+                          <span className="font-mono text-xs text-muted-foreground">{formatCurrency(cat.base)}</span>
+                        </div>
+                      )}
+                      {cat.shared > 0 && (
+                        <div className="flex justify-between pl-8">
+                          <span className="text-muted-foreground/70 text-xs">Shared usage</span>
+                          <span className="font-mono text-xs text-muted-foreground">{formatCurrency(cat.shared)}</span>
+                        </div>
+                      )}
+                      {cat.extFixed > 0 && (
+                        <div className="flex justify-between pl-8">
+                          <span className="text-muted-foreground/70 text-xs">Fixed monthly</span>
+                          <span className="font-mono text-xs text-muted-foreground">{formatCurrency(cat.extFixed)}</span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+
                 <Separator />
+
+                {/* ---- Per-GB rate breakdown ---- */}
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Per-GB rate breakdown</p>
                 <div className="flex justify-between font-medium">
-                  <span className="text-muted-foreground">Per-MVNO Usage</span>
+                  <span className="text-muted-foreground">Per-MVNO Usage Costs</span>
                   <span className="font-mono">{formatCurrency(result.totalPerMvnoUsageCosts)}</span>
                 </div>
-                <Separator />
-                <div className="flex justify-between font-medium">
-                  <span className="text-muted-foreground">External Per-GB</span>
-                  <span className="font-mono">{formatCurrency(result.totalExternalPerGb)}/GB</span>
+                {categoryBreakdown.map((cat) => {
+                  if (cat.totalPerMvno === 0 && cat.extPerGb === 0) return null
+                  return (
+                    <div key={`usage-${cat.name}`} className="space-y-0.5">
+                      {cat.totalPerMvno > 0 && (
+                        <div className="flex justify-between pl-4">
+                          <span className="text-muted-foreground">{cat.name}</span>
+                          <span className="font-mono">{formatCurrency(cat.totalPerMvno)}</span>
+                        </div>
+                      )}
+                      {cat.extPerGb > 0 && (
+                        <div className="flex justify-between pl-4">
+                          <span className="text-muted-foreground">{cat.name} (per-GB)</span>
+                          <span className="font-mono">{formatCurrency(cat.extPerGb)}/GB</span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+                <div className="flex justify-between pl-4 pt-1">
+                  <span className="text-muted-foreground">Est. GB per MVNO</span>
+                  <span className="font-mono">{result.estimatedGbPerMvno.toLocaleString()} GB</span>
                 </div>
-                <Separator />
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Est. Monthly GB</span>
-                  <span className="font-mono">{totalMonthlyGb.toLocaleString()} GB</span>
+                <div className="flex justify-between pl-4">
+                  <span className="text-muted-foreground">Usage cost per GB</span>
+                  <span className="font-mono">{result.estimatedGbPerMvno > 0 ? formatCurrency(result.totalPerMvnoUsageCosts / result.estimatedGbPerMvno) : '—'}/GB</span>
                 </div>
+
+                <Separator />
+
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Est. Total Cost</span>
+                  <span className="text-muted-foreground">Est. Total Platform Cost</span>
                   <span className="font-mono font-medium">{formatCurrency(result.totalSharedCost)}</span>
                 </div>
               </div>
@@ -762,6 +861,7 @@ export default function MvneCalculator() {
                     <TableHead># MVNOs</TableHead>
                     <TableHead className="text-right">MRC / MVNO</TableHead>
                     <TableHead className="text-right">Per-GB</TableHead>
+                    <TableHead className="text-right">Cost / GB</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -776,6 +876,9 @@ export default function MvneCalculator() {
                       </TableCell>
                       <TableCell className="text-right font-mono">
                         {formatCurrency(row.perGbRate)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-green-700 dark:text-green-400">
+                        {formatCurrency(row.costPerProducedGb)}
                       </TableCell>
                     </TableRow>
                   ))}
