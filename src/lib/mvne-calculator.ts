@@ -17,22 +17,29 @@ const SECONDS_PER_MONTH = 86_400 * 30;
 /** Default MVNO counts for sensitivity analysis */
 const SENSITIVITY_MVNO_COUNTS = [3, 5, 7, 10, 15] as const;
 
-/** Known platform usage SKU codes */
-export const MVNE_USAGE_SKUS = [
+/** Shared infrastructure usage SKUs — costs split across N MVNOs */
+export const MVNE_SHARED_USAGE_SKUS = [
   'Cennso_Sites',
   'Cennso_vCores',
   'Cennso_CoreCluster',
+  'CNO_Sites',
+  'CNO_Nodes',
+  'CNO_DB',
+] as const;
+
+/** Per-MVNO usage SKUs — costs apply per single MVNO, not split */
+export const MVNE_PER_MVNO_USAGE_SKUS = [
   'SMC_sessions',
   'UPG_Bandwidth',
   'TPOSS_UDR',
   'TPOSS_PCS',
   'TPOSS_CCS',
-  'CNO_Sites',
-  'CNO_Nodes',
-  'CNO_DB',
-  'CNO_LACS_Portal',
-  'CNO_LACS_AAA',
-  'CNO_LACS_Gateway',
+] as const;
+
+/** Known platform usage SKU codes (union of shared + per-MVNO) */
+export const MVNE_USAGE_SKUS = [
+  ...MVNE_SHARED_USAGE_SKUS,
+  ...MVNE_PER_MVNO_USAGE_SKUS,
 ] as const;
 
 /** Known platform base charge SKU codes */
@@ -59,9 +66,6 @@ const SKU_LABELS: Record<string, string> = {
   CNO_Sites: 'CNO Sites',
   CNO_Nodes: 'CNO Worker Nodes',
   CNO_DB: 'CNO Database Instances',
-  CNO_LACS_Portal: 'CNO LACS-Portal',
-  CNO_LACS_AAA: 'CNO LACS-AAA',
-  CNO_LACS_Gateway: 'CNO LACS-Gateway',
   Cennso_base: 'Cennso Base',
   SMC_base: 'SMC Base',
   UPG_base: 'UPG Base',
@@ -75,7 +79,7 @@ const SKU_LABELS: Record<string, string> = {
 // TYPES
 // ============================================================================
 
-export type ComponentType = 'base' | 'usage' | 'external_fixed' | 'external_per_gb';
+export type ComponentType = 'base' | 'shared_usage' | 'per_mvno_usage' | 'external_fixed' | 'external_per_gb';
 
 export interface ComponentBreakdown {
   skuCode: string;
@@ -97,8 +101,12 @@ export interface SensitivityRow {
 export interface MvneCalculationResult {
   /** Sum of all base charges */
   totalBaseCharges: number;
-  /** Sum of all usage-based costs */
+  /** Sum of all usage-based costs (shared + per-MVNO combined, for backward compat) */
   totalUsageCosts: number;
+  /** Sum of shared usage SKU costs (split across MVNOs) */
+  totalSharedUsageCosts: number;
+  /** Sum of per-MVNO usage SKU costs (not split) */
+  totalPerMvnoUsageCosts: number;
   /** Total platform cost (base + usage) */
   totalPlatformCost: number;
   /** Total external fixed costs (split across MVNOs) */
@@ -107,7 +115,7 @@ export interface MvneCalculationResult {
   totalExternalPerGb: number;
   /** Total external costs (fixed + per-GB estimated) */
   totalExternalCost: number;
-  /** Total fixed pool = platform + external fixed (split across MVNOs) */
+  /** Total fixed pool = base + shared usage + external fixed (split across MVNOs) */
   totalFixedPool: number;
   /** Grand total shared cost (platform + external) */
   totalSharedCost: number;
@@ -188,6 +196,40 @@ export function throughputToMonthlyGb(throughputMbps: number): number {
 }
 
 // ============================================================================
+// AUTO-POPULATION FROM CAPACITY INPUTS
+// ============================================================================
+
+/**
+ * Compute auto-populated SKU quantities from capacity inputs.
+ * Returns quantities for all SKUs that have formulas (excludes CNO_DB which is manual).
+ */
+export function computeSkuQuantities(capacity: MvneCapacityInputs): Record<string, number> {
+  const cennsoCnoSites = capacity.num_grx_sites + capacity.num_local_breakouts + 1;
+
+  return {
+    Cennso_Sites: cennsoCnoSites,
+    Cennso_vCores: (capacity.vcores_per_breakout * capacity.num_local_breakouts) + (capacity.vcores_per_pgw * capacity.num_grx_sites),
+    Cennso_CoreCluster: capacity.num_grx_sites + capacity.num_local_breakouts,
+    CNO_Sites: cennsoCnoSites,
+    CNO_Nodes: capacity.nodes_per_cno_site * cennsoCnoSites,
+    SMC_sessions: capacity.subs_per_mvno * capacity.parallel_take_rate,
+    UPG_Bandwidth: capacity.aggregate_throughput_mbps,
+    TPOSS_UDR: capacity.subs_per_mvno,
+    TPOSS_PCS: capacity.subs_per_mvno * capacity.take_rate_pcs_udr,
+    TPOSS_CCS: capacity.subs_per_mvno * capacity.take_rate_ccs_udr,
+  };
+}
+
+/** SKU codes that can be auto-populated from capacity inputs */
+export const AUTO_POPULATED_SKUS = new Set(Object.keys(computeSkuQuantities({
+  num_mvnos: 0, subs_per_mvno: 0, parallel_take_rate: 0,
+  aggregate_throughput_mbps: 0, num_local_breakouts: 0,
+  breakout_capacity_mbps: 0, num_grx_sites: 0, apns_per_mvno: 0,
+  vcores_per_breakout: 0, vcores_per_pgw: 0,
+  take_rate_pcs_udr: 0, take_rate_ccs_udr: 0, nodes_per_cno_site: 0,
+})));
+
+// ============================================================================
 // CORE CALCULATION
 // ============================================================================
 
@@ -211,8 +253,12 @@ export function calculateMvnePricing(
 
   // ------------------------------------------------------------------
   // 1. Usage SKU costs: quantity * unit_price * (1 - discount%)
+  //    Split into shared (infrastructure, split across N) and per-MVNO
   // ------------------------------------------------------------------
-  let totalUsageCosts = 0;
+  let totalSharedUsageCosts = 0;
+  let totalPerMvnoUsageCosts = 0;
+
+  const sharedSet = new Set<string>(MVNE_SHARED_USAGE_SKUS);
 
   for (const skuCode of MVNE_USAGE_SKUS) {
     const qty = skuQuantities[skuCode] ?? 0;
@@ -222,12 +268,17 @@ export function calculateMvnePricing(
     const discountPct = Math.min(100, Math.max(0, skuDiscounts[skuCode] ?? 0));
     const cost = round2(qty * unitPrice * (1 - discountPct / 100));
 
-    totalUsageCosts += cost;
+    const isShared = sharedSet.has(skuCode);
+    if (isShared) {
+      totalSharedUsageCosts += cost;
+    } else {
+      totalPerMvnoUsageCosts += cost;
+    }
 
     breakdown.push({
       skuCode,
       label: SKU_LABELS[skuCode] ?? skuCode,
-      type: 'usage',
+      type: isShared ? 'shared_usage' : 'per_mvno_usage',
       quantity: qty,
       listPrice,
       unitPrice,
@@ -236,7 +287,9 @@ export function calculateMvnePricing(
     });
   }
 
-  totalUsageCosts = round2(totalUsageCosts);
+  totalSharedUsageCosts = round2(totalSharedUsageCosts);
+  totalPerMvnoUsageCosts = round2(totalPerMvnoUsageCosts);
+  const totalUsageCosts = round2(totalSharedUsageCosts + totalPerMvnoUsageCosts);
 
   // ------------------------------------------------------------------
   // 2. Base charges: fixed MRC * (1 - discount%)
@@ -309,12 +362,14 @@ export function calculateMvnePricing(
 
   // ------------------------------------------------------------------
   // 6. Fixed pool and per-MVNO split
+  //    sharedPool = base + shared usage + external fixed  (split by N)
+  //    perMvnoMrc = sharedPool / N + per-MVNO usage       (per-MVNO stays constant)
   // ------------------------------------------------------------------
-  const totalFixedPool = round2(totalPlatformCost + totalExternalFixed);
-  const totalSharedCost = round2(totalFixedPool + totalExternalPerGb * totalMonthlyGb);
+  const totalFixedPool = round2(totalBaseCharges + totalSharedUsageCosts + totalExternalFixed);
+  const totalSharedCost = round2(totalFixedPool + totalPerMvnoUsageCosts + totalExternalPerGb * totalMonthlyGb);
 
   const effectiveMvnos = Math.max(1, num_mvnos);
-  const perMvnoMrc = round2(totalFixedPool / effectiveMvnos);
+  const perMvnoMrc = round2(totalFixedPool / effectiveMvnos + totalPerMvnoUsageCosts);
 
   // ------------------------------------------------------------------
   // 7. Per-GB rate = sum of per-GB costs (constant across MVNO counts)
@@ -327,11 +382,14 @@ export function calculateMvnePricing(
   const sensitivityTable = buildSensitivityTable(
     totalFixedPool,
     totalExternalPerGb,
+    totalPerMvnoUsageCosts,
   );
 
   return {
     totalBaseCharges,
     totalUsageCosts,
+    totalSharedUsageCosts,
+    totalPerMvnoUsageCosts,
     totalPlatformCost,
     totalExternalFixed,
     totalExternalPerGb,
@@ -356,18 +414,20 @@ export function calculateMvnePricing(
  * for a range of MVNO counts.
  *
  * Per-GB rate is constant (doesn't depend on N).
- * Per-MVNO MRC = totalFixedPool / N.
+ * Per-MVNO MRC = totalFixedPool / N + perMvnoUsageCosts.
+ * The per-MVNO usage costs stay constant across N — only the shared pool varies.
  */
 export function buildSensitivityTable(
   totalFixedPool: number,
   totalExternalPerGb: number,
+  perMvnoUsageCosts: number,
   mvnoCounts: readonly number[] = SENSITIVITY_MVNO_COUNTS,
 ): SensitivityRow[] {
   return mvnoCounts.map((n) => {
     const effectiveN = Math.max(1, n);
     return {
       numMvnos: effectiveN,
-      perMvnoMrc: round2(totalFixedPool / effectiveN),
+      perMvnoMrc: round2(totalFixedPool / effectiveN + perMvnoUsageCosts),
       perGbRate: round4(totalExternalPerGb),
     };
   });

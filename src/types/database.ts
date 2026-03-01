@@ -505,6 +505,11 @@ export interface MvneCapacityInputs {
   breakout_capacity_mbps: number
   num_grx_sites: number
   apns_per_mvno: number
+  vcores_per_breakout: number
+  vcores_per_pgw: number
+  take_rate_pcs_udr: number
+  take_rate_ccs_udr: number
+  nodes_per_cno_site: number
 }
 
 export interface MvneExternalCostItem {
@@ -523,6 +528,7 @@ export interface MvneCalculatorConfig {
   capacity_inputs: MvneCapacityInputs
   sku_quantities: Record<string, number>
   sku_discounts: Record<string, number>
+  sku_overrides: Record<string, boolean>
   external_costs: MvneExternalCosts
   created_by: string | null
   created_at: string

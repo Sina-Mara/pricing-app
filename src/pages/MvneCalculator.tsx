@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -24,7 +24,7 @@ import {
 } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
 import { formatCurrency } from '@/lib/utils'
-import { Save, FolderOpen, Trash2, Plus } from 'lucide-react'
+import { Save, FolderOpen, Trash2, Plus, Calculator, RotateCcw } from 'lucide-react'
 import type { Sku, BaseCharge, MvneCapacityInputs, MvneExternalCosts, MvneExternalCostItem } from '@/types/database'
 import type { PricingModel } from '@/lib/pricing'
 import { priceFromModel } from '@/lib/pricing'
@@ -32,7 +32,11 @@ import {
   calculateMvnePricing,
   createDefaultExternalCosts,
   migrateExternalCosts,
+  computeSkuQuantities,
+  AUTO_POPULATED_SKUS,
   MVNE_USAGE_SKUS,
+  MVNE_SHARED_USAGE_SKUS,
+  MVNE_PER_MVNO_USAGE_SKUS,
   MVNE_BASE_SKUS,
   throughputToMonthlyGb,
 } from '@/lib/mvne-calculator'
@@ -55,6 +59,11 @@ const DEFAULT_CAPACITY: MvneCapacityInputs = {
   breakout_capacity_mbps: 1000,
   num_grx_sites: 3,
   apns_per_mvno: 1,
+  vcores_per_breakout: 0,
+  vcores_per_pgw: 0,
+  take_rate_pcs_udr: 0,
+  take_rate_ccs_udr: 0,
+  nodes_per_cno_site: 0,
 }
 
 const DEFAULT_EXTERNAL: MvneExternalCosts = createDefaultExternalCosts()
@@ -71,9 +80,6 @@ const SKU_UNITS: Record<string, string> = {
   CNO_Sites: 'Sites',
   CNO_Nodes: 'Worker Nodes',
   CNO_DB: 'DB Instances',
-  CNO_LACS_Portal: 'Instances',
-  CNO_LACS_AAA: 'Instances',
-  CNO_LACS_Gateway: 'Instances',
 }
 
 const SKU_DISPLAY: Record<string, string> = {
@@ -88,9 +94,6 @@ const SKU_DISPLAY: Record<string, string> = {
   CNO_Sites: 'CNO Sites',
   CNO_Nodes: 'CNO Worker Nodes',
   CNO_DB: 'CNO Database Instances',
-  CNO_LACS_Portal: 'CNO LACS-Portal',
-  CNO_LACS_AAA: 'CNO LACS-AAA',
-  CNO_LACS_Gateway: 'CNO LACS-Gateway',
   Cennso_base: 'Cennso Base',
   SMC_base: 'SMC Base',
   UPG_base: 'UPG Base',
@@ -112,6 +115,7 @@ export default function MvneCalculator() {
   const [skuQuantities, setSkuQuantities] = useState<Record<string, number>>({})
   const [skuDiscounts, setSkuDiscounts] = useState<Record<string, number>>({})
   const [externalCosts, setExternalCosts] = useState<MvneExternalCosts>(DEFAULT_EXTERNAL)
+  const [skuOverrides, setSkuOverrides] = useState<Record<string, boolean>>({})
   const [configId, setConfigId] = useState<string | null>(null)
   const [configName, setConfigName] = useState('')
   const [showSaveDialog, setShowSaveDialog] = useState(false)
@@ -171,6 +175,24 @@ export default function MvneCalculator() {
   const { saveConfig, saving } = useMvneSaveConfig()
   const { deleteConfig, deleting } = useMvneDeleteConfig()
 
+  // ---- Auto-populate SKU quantities from capacity inputs ----
+  const isLoadingConfig = useRef(false)
+
+  useEffect(() => {
+    if (isLoadingConfig.current) return
+    const computed = computeSkuQuantities(capacity)
+    setSkuQuantities((prev) => {
+      const next = { ...prev }
+      for (const [code, qty] of Object.entries(computed)) {
+        if (!skuOverrides[code]) {
+          next[code] = qty
+        }
+      }
+      return next
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capacity, skuOverrides])
+
   // ---- Calculation (reactive) ----
   const result = useMemo(
     () => calculateMvnePricing(skuQuantities, pricingModels, baseMrcs, externalCosts, capacity, skuDiscounts),
@@ -186,12 +208,28 @@ export default function MvneCalculator() {
   )
 
   const updateSkuQty = useCallback((code: string, value: number) => {
+    if (AUTO_POPULATED_SKUS.has(code)) {
+      setSkuOverrides((prev) => ({ ...prev, [code]: true }))
+    }
     setSkuQuantities((prev) => ({ ...prev, [code]: value }))
   }, [])
 
   const updateSkuDiscount = useCallback((code: string, value: number) => {
     setSkuDiscounts((prev) => ({ ...prev, [code]: Math.min(100, Math.max(0, value)) }))
   }, [])
+
+  const resetSkuOverride = useCallback((code: string) => {
+    setSkuOverrides((prev) => {
+      const next = { ...prev }
+      delete next[code]
+      return next
+    })
+    // Recalculate from current capacity
+    const computed = computeSkuQuantities(capacity)
+    if (code in computed) {
+      setSkuQuantities((prev) => ({ ...prev, [code]: computed[code] }))
+    }
+  }, [capacity])
 
   const addExternalCost = useCallback(() => {
     setExternalCosts((prev) => [
@@ -225,6 +263,7 @@ export default function MvneCalculator() {
         capacity_inputs: capacity,
         sku_quantities: skuQuantities,
         sku_discounts: skuDiscounts,
+        sku_overrides: skuOverrides,
         external_costs: externalCosts,
       })
       setConfigId(saved.id)
@@ -247,12 +286,37 @@ export default function MvneCalculator() {
       return
     }
 
+    isLoadingConfig.current = true
     setConfigId(data.id)
     setConfigName(data.name)
-    setCapacity(data.capacity_inputs as MvneCapacityInputs)
+
+    // Merge loaded capacity with defaults so new fields (e.g. vcores_per_breakout)
+    // default to 0 when loading configs saved before those fields existed.
+    const loadedCapacity: MvneCapacityInputs = { ...DEFAULT_CAPACITY, ...(data.capacity_inputs as Partial<MvneCapacityInputs>) }
+    setCapacity(loadedCapacity)
     setSkuQuantities(data.sku_quantities as Record<string, number>)
     setSkuDiscounts((data.sku_discounts as Record<string, number>) ?? {})
     setExternalCosts(migrateExternalCosts(data.external_costs))
+
+    // Restore SKU overrides: prefer persisted overrides if available (new configs),
+    // otherwise infer from quantity differences (backward compat for old configs).
+    const savedOverrides = (data.sku_overrides as Record<string, boolean> | null) ?? null
+    if (savedOverrides && Object.keys(savedOverrides).length > 0) {
+      setSkuOverrides(savedOverrides)
+    } else {
+      // Legacy configs: infer overrides by comparing stored quantities to computed
+      const loadedQtys = data.sku_quantities as Record<string, number>
+      const computed = computeSkuQuantities(loadedCapacity)
+      const inferred: Record<string, boolean> = {}
+      for (const code of AUTO_POPULATED_SKUS) {
+        if (code in loadedQtys && loadedQtys[code] !== computed[code]) {
+          inferred[code] = true
+        }
+      }
+      setSkuOverrides(inferred)
+    }
+    // Re-enable auto-population after state updates settle
+    requestAnimationFrame(() => { isLoadingConfig.current = false })
     setShowLoadDialog(false)
     toast({ title: `Loaded "${data.name}"` })
   }
@@ -358,6 +422,39 @@ export default function MvneCalculator() {
                   onChange={(v) => updateCapacity('apns_per_mvno', v)}
                 />
               </div>
+              <Separator className="my-4" />
+              <div>
+                <p className="text-sm font-medium mb-3">Sizing Parameters</p>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+                  <NumberField
+                    label="vCores per Breakout"
+                    value={capacity.vcores_per_breakout}
+                    onChange={(v) => updateCapacity('vcores_per_breakout', v)}
+                  />
+                  <NumberField
+                    label="vCores per PGW/GRX"
+                    value={capacity.vcores_per_pgw}
+                    onChange={(v) => updateCapacity('vcores_per_pgw', v)}
+                  />
+                  <NumberField
+                    label="PCS/UDR Take Rate"
+                    value={capacity.take_rate_pcs_udr}
+                    onChange={(v) => updateCapacity('take_rate_pcs_udr', v)}
+                    step={0.01}
+                  />
+                  <NumberField
+                    label="CCS/UDR Take Rate"
+                    value={capacity.take_rate_ccs_udr}
+                    onChange={(v) => updateCapacity('take_rate_ccs_udr', v)}
+                    step={0.01}
+                  />
+                  <NumberField
+                    label="CNO Nodes per Site"
+                    value={capacity.nodes_per_cno_site}
+                    onChange={(v) => updateCapacity('nodes_per_cno_site', v)}
+                  />
+                </div>
+              </div>
             </CardContent>
           </Card>
 
@@ -366,7 +463,7 @@ export default function MvneCalculator() {
             <CardHeader>
               <CardTitle>Platform Usage Costs</CardTitle>
               <CardDescription>
-                Enter quantities — unit prices are pulled from the SKU catalog
+                Quantities are auto-derived from capacity inputs. Override manually if needed.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -374,7 +471,7 @@ export default function MvneCalculator() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Component</TableHead>
-                    <TableHead className="w-32">Quantity</TableHead>
+                    <TableHead className="w-40">Quantity</TableHead>
                     <TableHead className="w-24">Unit</TableHead>
                     <TableHead className="w-28 text-right">List Price</TableHead>
                     <TableHead className="w-28 text-right">Vol. Price</TableHead>
@@ -383,52 +480,65 @@ export default function MvneCalculator() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {MVNE_USAGE_SKUS.map((code) => {
-                    const qty = skuQuantities[code] ?? 0
-                    const model = pricingModels[code]
-                    const listPrice = model?.base_unit_price ?? 0
-                    const volPrice = model && qty > 0 ? priceFromModel(model, qty) : listPrice
-                    const hasVolDiscount = qty > 0 && volPrice < listPrice
-                    const disc = skuDiscounts[code] ?? 0
-                    const cost = qty * volPrice * (1 - disc / 100)
+                  {/* Shared Infrastructure section */}
+                  <TableRow className="bg-muted/30 hover:bg-muted/30">
+                    <TableCell colSpan={7} className="py-2 font-semibold text-xs uppercase tracking-wide text-muted-foreground">
+                      Shared Infrastructure (split across {capacity.num_mvnos} MVNOs)
+                    </TableCell>
+                  </TableRow>
+                  {MVNE_SHARED_USAGE_SKUS.map((code) => {
+                    const isAuto = AUTO_POPULATED_SKUS.has(code)
+                    const isOverridden = isAuto && skuOverrides[code]
+                    const isAutoActive = isAuto && !isOverridden
                     return (
-                      <TableRow key={code}>
-                        <TableCell className="font-medium">{SKU_DISPLAY[code]}</TableCell>
-                        <TableCell>
-                          <Input
-                            type="number"
-                            min={0}
-                            value={qty || ''}
-                            onChange={(e) => updateSkuQty(code, parseFloat(e.target.value) || 0)}
-                            className="h-8"
-                          />
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm">
-                          {SKU_UNITS[code]}
-                        </TableCell>
-                        <TableCell className={`text-right font-mono text-sm ${hasVolDiscount ? 'line-through text-muted-foreground' : ''}`}>
-                          {formatCurrency(listPrice)}
-                        </TableCell>
-                        <TableCell className={`text-right font-mono text-sm ${hasVolDiscount ? 'text-green-600 font-medium' : ''}`}>
-                          {formatCurrency(volPrice)}
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            type="number"
-                            min={0}
-                            max={100}
-                            step={1}
-                            value={disc || ''}
-                            onChange={(e) => updateSkuDiscount(code, parseFloat(e.target.value) || 0)}
-                            className="h-8"
-                          />
-                        </TableCell>
-                        <TableCell className={`text-right font-mono font-medium ${disc > 0 ? 'text-green-600' : ''}`}>
-                          {formatCurrency(cost)}
-                        </TableCell>
-                      </TableRow>
+                      <SkuRow
+                        key={code}
+                        code={code}
+                        qty={skuQuantities[code] ?? 0}
+                        model={pricingModels[code]}
+                        disc={skuDiscounts[code] ?? 0}
+                        isAutoActive={isAutoActive}
+                        isOverridden={!!isOverridden}
+                        onQtyChange={updateSkuQty}
+                        onDiscChange={updateSkuDiscount}
+                        onReset={resetSkuOverride}
+                      />
                     )
                   })}
+                  <TableRow className="border-t font-medium">
+                    <TableCell colSpan={6} className="text-muted-foreground">Shared Subtotal</TableCell>
+                    <TableCell className="text-right font-mono">{formatCurrency(result.totalSharedUsageCosts)}</TableCell>
+                  </TableRow>
+
+                  {/* Per-MVNO Usage section */}
+                  <TableRow className="bg-muted/30 hover:bg-muted/30">
+                    <TableCell colSpan={7} className="py-2 font-semibold text-xs uppercase tracking-wide text-muted-foreground">
+                      Per-MVNO Usage (not split)
+                    </TableCell>
+                  </TableRow>
+                  {MVNE_PER_MVNO_USAGE_SKUS.map((code) => {
+                    const isAuto = AUTO_POPULATED_SKUS.has(code)
+                    const isOverridden = isAuto && skuOverrides[code]
+                    const isAutoActive = isAuto && !isOverridden
+                    return (
+                      <SkuRow
+                        key={code}
+                        code={code}
+                        qty={skuQuantities[code] ?? 0}
+                        model={pricingModels[code]}
+                        disc={skuDiscounts[code] ?? 0}
+                        isAutoActive={isAutoActive}
+                        isOverridden={!!isOverridden}
+                        onQtyChange={updateSkuQty}
+                        onDiscChange={updateSkuDiscount}
+                        onReset={resetSkuOverride}
+                      />
+                    )
+                  })}
+                  <TableRow className="border-t font-medium">
+                    <TableCell colSpan={6} className="text-muted-foreground">Per-MVNO Subtotal</TableCell>
+                    <TableCell className="text-right font-mono">{formatCurrency(result.totalPerMvnoUsageCosts)}</TableCell>
+                  </TableRow>
                 </TableBody>
               </Table>
             </CardContent>
@@ -603,20 +713,21 @@ export default function MvneCalculator() {
                   <span className="font-mono">{formatCurrency(result.totalFixedPool)}</span>
                 </div>
                 <div className="flex justify-between pl-4">
-                  <span className="text-muted-foreground">Platform Cost</span>
-                  <span className="font-mono">{formatCurrency(result.totalPlatformCost)}</span>
-                </div>
-                <div className="flex justify-between pl-8">
                   <span className="text-muted-foreground">Base Charges</span>
                   <span className="font-mono">{formatCurrency(result.totalBaseCharges)}</span>
                 </div>
-                <div className="flex justify-between pl-8">
-                  <span className="text-muted-foreground">Usage Costs</span>
-                  <span className="font-mono">{formatCurrency(result.totalUsageCosts)}</span>
+                <div className="flex justify-between pl-4">
+                  <span className="text-muted-foreground">Shared Usage</span>
+                  <span className="font-mono">{formatCurrency(result.totalSharedUsageCosts)}</span>
                 </div>
                 <div className="flex justify-between pl-4">
                   <span className="text-muted-foreground">External Fixed</span>
                   <span className="font-mono">{formatCurrency(result.totalExternalFixed)}</span>
+                </div>
+                <Separator />
+                <div className="flex justify-between font-medium">
+                  <span className="text-muted-foreground">Per-MVNO Usage</span>
+                  <span className="font-mono">{formatCurrency(result.totalPerMvnoUsageCosts)}</span>
                 </div>
                 <Separator />
                 <div className="flex justify-between font-medium">
@@ -780,6 +891,89 @@ function NumberField({
         className="h-8"
       />
     </div>
+  )
+}
+
+function SkuRow({
+  code,
+  qty,
+  model,
+  disc,
+  isAutoActive,
+  isOverridden,
+  onQtyChange,
+  onDiscChange,
+  onReset,
+}: {
+  code: string
+  qty: number
+  model: PricingModel | undefined
+  disc: number
+  isAutoActive: boolean
+  isOverridden: boolean
+  onQtyChange: (code: string, value: number) => void
+  onDiscChange: (code: string, value: number) => void
+  onReset: (code: string) => void
+}) {
+  const listPrice = model?.base_unit_price ?? 0
+  const volPrice = model && qty > 0 ? priceFromModel(model, qty) : listPrice
+  const hasVolDiscount = qty > 0 && volPrice < listPrice
+  const cost = qty * volPrice * (1 - disc / 100)
+
+  return (
+    <TableRow key={code}>
+      <TableCell className="font-medium">{SKU_DISPLAY[code]}</TableCell>
+      <TableCell>
+        <div className="flex items-center gap-1">
+          <div className="relative flex-1">
+            <Input
+              type="number"
+              min={0}
+              value={qty || ''}
+              onChange={(e) => onQtyChange(code, parseFloat(e.target.value) || 0)}
+              className={`h-8 ${isAutoActive ? 'bg-muted/50 pr-8' : ''}`}
+            />
+            {isAutoActive && (
+              <Calculator className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/60" />
+            )}
+          </div>
+          {isOverridden && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              onClick={() => onReset(code)}
+              title="Reset to auto-derived value"
+            >
+              <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
+            </Button>
+          )}
+        </div>
+      </TableCell>
+      <TableCell className="text-muted-foreground text-sm">
+        {SKU_UNITS[code]}
+      </TableCell>
+      <TableCell className={`text-right font-mono text-sm ${hasVolDiscount ? 'line-through text-muted-foreground' : ''}`}>
+        {formatCurrency(listPrice)}
+      </TableCell>
+      <TableCell className={`text-right font-mono text-sm ${hasVolDiscount ? 'text-green-600 font-medium' : ''}`}>
+        {formatCurrency(volPrice)}
+      </TableCell>
+      <TableCell>
+        <Input
+          type="number"
+          min={0}
+          max={100}
+          step={1}
+          value={disc || ''}
+          onChange={(e) => onDiscChange(code, parseFloat(e.target.value) || 0)}
+          className="h-8"
+        />
+      </TableCell>
+      <TableCell className={`text-right font-mono font-medium ${disc > 0 ? 'text-green-600' : ''}`}>
+        {formatCurrency(cost)}
+      </TableCell>
+    </TableRow>
   )
 }
 
