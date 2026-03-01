@@ -507,11 +507,14 @@ export interface MvneCapacityInputs {
   apns_per_mvno: number
 }
 
-export interface MvneExternalCosts {
-  infrastructure: number
-  grx: number
-  esim: number
+export interface MvneExternalCostItem {
+  id: string
+  name: string
+  fixed_monthly: number
+  per_gb: number
 }
+
+export type MvneExternalCosts = MvneExternalCostItem[]
 
 export interface MvneCalculatorConfig {
   id: string
@@ -519,6 +522,7 @@ export interface MvneCalculatorConfig {
   description: string | null
   capacity_inputs: MvneCapacityInputs
   sku_quantities: Record<string, number>
+  sku_discounts: Record<string, number>
   external_costs: MvneExternalCosts
   created_by: string | null
   created_at: string

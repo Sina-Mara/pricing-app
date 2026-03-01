@@ -79,6 +79,7 @@ interface SaveConfigData {
   description?: string | null
   capacity_inputs: MvneCapacityInputs
   sku_quantities: Record<string, number>
+  sku_discounts: Record<string, number>
   external_costs: MvneExternalCosts
 }
 
@@ -95,6 +96,7 @@ export function useMvneSaveConfig() {
         description: input.description?.trim() || null,
         capacity_inputs: input.capacity_inputs,
         sku_quantities: input.sku_quantities,
+        sku_discounts: input.sku_discounts,
         external_costs: input.external_costs,
       }
 

@@ -3,7 +3,7 @@
 // Splits shared infrastructure costs equally across N MVNOs
 // ============================================================================
 
-import type { MvneCapacityInputs, MvneExternalCosts } from '@/types/database';
+import type { MvneCapacityInputs, MvneExternalCosts, MvneExternalCostItem } from '@/types/database';
 import { round2, round4, priceFromModel } from '@/lib/pricing';
 import type { PricingModel } from '@/lib/pricing';
 
@@ -27,6 +27,12 @@ export const MVNE_USAGE_SKUS = [
   'TPOSS_UDR',
   'TPOSS_PCS',
   'TPOSS_CCS',
+  'CNO_Sites',
+  'CNO_Nodes',
+  'CNO_DB',
+  'CNO_LACS_Portal',
+  'CNO_LACS_AAA',
+  'CNO_LACS_Gateway',
 ] as const;
 
 /** Known platform base charge SKU codes */
@@ -35,6 +41,9 @@ export const MVNE_BASE_SKUS = [
   'SMC_base',
   'UPG_base',
   'TPOSS_base',
+  'CNO_base',
+  'CNO_24_7',
+  'CNO_central',
 ] as const;
 
 /** Human-readable labels for SKU codes */
@@ -47,17 +56,26 @@ const SKU_LABELS: Record<string, string> = {
   TPOSS_UDR: 'TPOSS UDR',
   TPOSS_PCS: 'TPOSS PCS',
   TPOSS_CCS: 'TPOSS CCS',
+  CNO_Sites: 'CNO Sites',
+  CNO_Nodes: 'CNO Worker Nodes',
+  CNO_DB: 'CNO Database Instances',
+  CNO_LACS_Portal: 'CNO LACS-Portal',
+  CNO_LACS_AAA: 'CNO LACS-AAA',
+  CNO_LACS_Gateway: 'CNO LACS-Gateway',
   Cennso_base: 'Cennso Base',
   SMC_base: 'SMC Base',
   UPG_base: 'UPG Base',
   TPOSS_base: 'TPOSS Base',
+  CNO_base: 'CNO Management Base',
+  CNO_24_7: 'CNO 24/7 Support',
+  CNO_central: 'CNO Central Services',
 };
 
 // ============================================================================
 // TYPES
 // ============================================================================
 
-export type ComponentType = 'base' | 'usage' | 'external';
+export type ComponentType = 'base' | 'usage' | 'external_fixed' | 'external_per_gb';
 
 export interface ComponentBreakdown {
   skuCode: string;
@@ -66,6 +84,7 @@ export interface ComponentBreakdown {
   quantity?: number;
   listPrice?: number;
   unitPrice?: number;
+  discountPct: number;
   cost: number;
 }
 
@@ -82,13 +101,19 @@ export interface MvneCalculationResult {
   totalUsageCosts: number;
   /** Total platform cost (base + usage) */
   totalPlatformCost: number;
-  /** Total external costs (infrastructure + GRX + eSIM) */
+  /** Total external fixed costs (split across MVNOs) */
+  totalExternalFixed: number;
+  /** Total external per-GB costs (sum of per_gb rates) */
+  totalExternalPerGb: number;
+  /** Total external costs (fixed + per-GB estimated) */
   totalExternalCost: number;
+  /** Total fixed pool = platform + external fixed (split across MVNOs) */
+  totalFixedPool: number;
   /** Grand total shared cost (platform + external) */
   totalSharedCost: number;
-  /** Per-MVNO monthly recurring charge */
+  /** Per-MVNO monthly recurring charge (fixed costs only / N) */
   perMvnoMrc: number;
-  /** Cost per GB based on aggregate throughput */
+  /** Per-GB rate = sum of all per-GB external costs */
   perGbRate: number;
   /** Estimated total monthly GB from aggregate throughput */
   totalMonthlyGb: number;
@@ -101,6 +126,51 @@ export interface MvneCalculationResult {
 }
 
 // ============================================================================
+// MIGRATION & DEFAULTS
+// ============================================================================
+
+let _nextId = 1;
+function nextId(): string {
+  return `ext_${_nextId++}`;
+}
+
+/**
+ * Create the 3 default external cost items.
+ */
+export function createDefaultExternalCosts(): MvneExternalCosts {
+  return [
+    { id: nextId(), name: 'Infrastructure (VMs, IPs, Storage)', fixed_monthly: 0, per_gb: 0 },
+    { id: nextId(), name: 'GRX Costs', fixed_monthly: 0, per_gb: 0 },
+    { id: nextId(), name: 'eSIM Costs', fixed_monthly: 0, per_gb: 0 },
+  ];
+}
+
+/**
+ * Migrate old-format external costs ({ infrastructure, grx, esim })
+ * to the new array format. If already an array, returns as-is.
+ */
+export function migrateExternalCosts(raw: unknown): MvneExternalCosts {
+  if (Array.isArray(raw)) {
+    // Already new format — ensure each item has an id
+    return (raw as MvneExternalCostItem[]).map((item) => ({
+      ...item,
+      id: item.id || nextId(),
+    }));
+  }
+
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const old = raw as { infrastructure?: number; grx?: number; esim?: number };
+    return [
+      { id: nextId(), name: 'Infrastructure (VMs, IPs, Storage)', fixed_monthly: old.infrastructure ?? 0, per_gb: 0 },
+      { id: nextId(), name: 'GRX Costs', fixed_monthly: old.grx ?? 0, per_gb: 0 },
+      { id: nextId(), name: 'eSIM Costs', fixed_monthly: old.esim ?? 0, per_gb: 0 },
+    ];
+  }
+
+  return createDefaultExternalCosts();
+}
+
+// ============================================================================
 // THROUGHPUT CONVERSION
 // ============================================================================
 
@@ -108,7 +178,7 @@ export interface MvneCalculationResult {
  * Convert aggregate throughput in Mbit/s to estimated monthly GB.
  *
  * Formula:
- *   Mbit/s → MB/s (÷ 8) → GB/s (÷ 1024) → GB/month (× 86400 × 30)
+ *   Mbit/s -> MB/s (/ 8) -> GB/s (/ 1024) -> GB/month (* 86400 * 30)
  *
  * Uses 30-day month, binary GB (1024 MB = 1 GB).
  */
@@ -124,11 +194,9 @@ export function throughputToMonthlyGb(throughputMbps: number): number {
 /**
  * Calculate the full MVNE cost breakdown for a given set of inputs.
  *
- * @param skuQuantities     - User-entered quantities keyed by usage SKU code
- * @param skuPricingModels  - Full pricing models from DB, keyed by SKU code
- * @param baseCharges       - Fixed MRC values from DB (base_charges), keyed by SKU code
- * @param externalCosts     - Manual external cost entries (infrastructure, GRX, eSIM)
- * @param capacityInputs    - Capacity parameters; num_mvnos and aggregate_throughput_mbps are used
+ * New model:
+ *   - Fixed costs (platform + external fixed) are split across N MVNOs -> perMvnoMrc
+ *   - Per-GB costs are summed directly -> perGbRate (constant regardless of N)
  */
 export function calculateMvnePricing(
   skuQuantities: Record<string, number>,
@@ -136,12 +204,13 @@ export function calculateMvnePricing(
   baseCharges: Record<string, number>,
   externalCosts: MvneExternalCosts,
   capacityInputs: MvneCapacityInputs,
+  skuDiscounts: Record<string, number> = {},
 ): MvneCalculationResult {
   const { num_mvnos, aggregate_throughput_mbps } = capacityInputs;
   const breakdown: ComponentBreakdown[] = [];
 
   // ------------------------------------------------------------------
-  // 1. Usage SKU costs: quantity × unit_price
+  // 1. Usage SKU costs: quantity * unit_price * (1 - discount%)
   // ------------------------------------------------------------------
   let totalUsageCosts = 0;
 
@@ -150,7 +219,8 @@ export function calculateMvnePricing(
     const model = skuPricingModels[skuCode];
     const listPrice = model?.base_unit_price ?? 0;
     const unitPrice = model && qty > 0 ? priceFromModel(model, qty) : listPrice;
-    const cost = round2(qty * unitPrice);
+    const discountPct = Math.min(100, Math.max(0, skuDiscounts[skuCode] ?? 0));
+    const cost = round2(qty * unitPrice * (1 - discountPct / 100));
 
     totalUsageCosts += cost;
 
@@ -161,6 +231,7 @@ export function calculateMvnePricing(
       quantity: qty,
       listPrice,
       unitPrice,
+      discountPct,
       cost,
     });
   }
@@ -168,18 +239,21 @@ export function calculateMvnePricing(
   totalUsageCosts = round2(totalUsageCosts);
 
   // ------------------------------------------------------------------
-  // 2. Base charges: sum of fixed MRC values
+  // 2. Base charges: fixed MRC * (1 - discount%)
   // ------------------------------------------------------------------
   let totalBaseCharges = 0;
 
   for (const skuCode of MVNE_BASE_SKUS) {
-    const cost = round2(baseCharges[skuCode] ?? 0);
+    const baseMrc = baseCharges[skuCode] ?? 0;
+    const discountPct = Math.min(100, Math.max(0, skuDiscounts[skuCode] ?? 0));
+    const cost = round2(baseMrc * (1 - discountPct / 100));
     totalBaseCharges += cost;
 
     breakdown.push({
       skuCode,
       label: SKU_LABELS[skuCode] ?? skuCode,
       type: 'base',
+      discountPct,
       cost,
     });
   }
@@ -192,46 +266,77 @@ export function calculateMvnePricing(
   const totalPlatformCost = round2(totalBaseCharges + totalUsageCosts);
 
   // ------------------------------------------------------------------
-  // 4. External costs
-  // ------------------------------------------------------------------
-  const infraCost = round2(externalCosts.infrastructure);
-  const grxCost = round2(externalCosts.grx);
-  const esimCost = round2(externalCosts.esim);
-  const totalExternalCost = round2(infraCost + grxCost + esimCost);
-
-  breakdown.push(
-    { skuCode: 'EXT_infrastructure', label: 'Infrastructure', type: 'external', cost: infraCost },
-    { skuCode: 'EXT_grx', label: 'GRX', type: 'external', cost: grxCost },
-    { skuCode: 'EXT_esim', label: 'eSIM', type: 'external', cost: esimCost },
-  );
-
-  // ------------------------------------------------------------------
-  // 5. Grand total and per-MVNO split
-  // ------------------------------------------------------------------
-  const totalSharedCost = round2(totalPlatformCost + totalExternalCost);
-
-  const effectiveMvnos = Math.max(1, num_mvnos);
-  const perMvnoMrc = round2(totalSharedCost / effectiveMvnos);
-
-  // ------------------------------------------------------------------
-  // 6. Per-GB rate
+  // 4. Monthly GB (needed for per-GB cost estimation)
   // ------------------------------------------------------------------
   const totalMonthlyGb = throughputToMonthlyGb(aggregate_throughput_mbps);
-  const perGbRate = totalMonthlyGb > 0 ? round4(totalSharedCost / totalMonthlyGb) : 0;
 
   // ------------------------------------------------------------------
-  // 7. Sensitivity table
+  // 5. External costs: iterate array, split fixed vs per-GB
+  // ------------------------------------------------------------------
+  let totalExternalFixed = 0;
+  let totalExternalPerGb = 0;
+
+  for (const item of externalCosts) {
+    const fixedCost = round2(item.fixed_monthly);
+    const perGbCost = round4(item.per_gb);
+
+    if (fixedCost > 0) {
+      totalExternalFixed += fixedCost;
+      breakdown.push({
+        skuCode: `EXT_fixed_${item.id}`,
+        label: item.name,
+        type: 'external_fixed',
+        discountPct: 0,
+        cost: fixedCost,
+      });
+    }
+
+    if (perGbCost > 0) {
+      totalExternalPerGb = round4(totalExternalPerGb + perGbCost);
+      breakdown.push({
+        skuCode: `EXT_pergb_${item.id}`,
+        label: item.name,
+        type: 'external_per_gb',
+        discountPct: 0,
+        unitPrice: perGbCost,
+        cost: round2(perGbCost * totalMonthlyGb),
+      });
+    }
+  }
+
+  totalExternalFixed = round2(totalExternalFixed);
+  const totalExternalCost = round2(totalExternalFixed + totalExternalPerGb * totalMonthlyGb);
+
+  // ------------------------------------------------------------------
+  // 6. Fixed pool and per-MVNO split
+  // ------------------------------------------------------------------
+  const totalFixedPool = round2(totalPlatformCost + totalExternalFixed);
+  const totalSharedCost = round2(totalFixedPool + totalExternalPerGb * totalMonthlyGb);
+
+  const effectiveMvnos = Math.max(1, num_mvnos);
+  const perMvnoMrc = round2(totalFixedPool / effectiveMvnos);
+
+  // ------------------------------------------------------------------
+  // 7. Per-GB rate = sum of per-GB costs (constant across MVNO counts)
+  // ------------------------------------------------------------------
+  const perGbRate = round4(totalExternalPerGb);
+
+  // ------------------------------------------------------------------
+  // 8. Sensitivity table
   // ------------------------------------------------------------------
   const sensitivityTable = buildSensitivityTable(
-    totalSharedCost,
-    totalMonthlyGb,
+    totalFixedPool,
+    totalExternalPerGb,
   );
 
   return {
     totalBaseCharges,
     totalUsageCosts,
     totalPlatformCost,
+    totalExternalFixed,
+    totalExternalPerGb,
     totalExternalCost,
+    totalFixedPool,
     totalSharedCost,
     perMvnoMrc,
     perGbRate,
@@ -249,18 +354,21 @@ export function calculateMvnePricing(
 /**
  * Build a sensitivity table showing per-MVNO MRC and per-GB rate
  * for a range of MVNO counts.
+ *
+ * Per-GB rate is constant (doesn't depend on N).
+ * Per-MVNO MRC = totalFixedPool / N.
  */
 export function buildSensitivityTable(
-  totalSharedCost: number,
-  totalMonthlyGb: number,
+  totalFixedPool: number,
+  totalExternalPerGb: number,
   mvnoCounts: readonly number[] = SENSITIVITY_MVNO_COUNTS,
 ): SensitivityRow[] {
   return mvnoCounts.map((n) => {
     const effectiveN = Math.max(1, n);
     return {
       numMvnos: effectiveN,
-      perMvnoMrc: round2(totalSharedCost / effectiveN),
-      perGbRate: totalMonthlyGb > 0 ? round4(totalSharedCost / totalMonthlyGb) : 0,
+      perMvnoMrc: round2(totalFixedPool / effectiveN),
+      perGbRate: round4(totalExternalPerGb),
     };
   });
 }
