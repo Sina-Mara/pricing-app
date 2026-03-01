@@ -95,7 +95,11 @@ export function generateQuotePDF(quote: QuoteWithDetails) {
       item.quantity.toString(),
       item.environment,
       item.unit_price ? formatCurrency(item.unit_price) : '-',
-      item.total_discount_pct ? formatPercent(item.total_discount_pct) : '-',
+      item.total_discount_pct
+        ? item.total_discount_pct > 0
+          ? `-${formatPercent(item.total_discount_pct)}`
+          : `+${formatPercent(Math.abs(item.total_discount_pct))}`
+        : '-',
       item.monthly_total ? formatCurrency(item.monthly_total) : '-',
     ])
 

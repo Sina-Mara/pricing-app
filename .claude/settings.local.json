@@ -13,7 +13,30 @@
       "Bash(npx playwright install chromium)",
       "Bash(npm run test:e2e:*)",
       "Bash(tree:*)",
-      "Bash(gh auth status:*)"
+      "Bash(gh auth status:*)",
+      "Bash(wc:*)",
+      "Bash(npx tsc:*)",
+      "Bash(./node_modules/.bin/tsc:*)",
+      "Bash(npm run test)",
+      "Bash(curl:*)",
+      "Bash(lsof:*)",
+      "mcp__plugin_playwright_playwright__browser_navigate",
+      "mcp__plugin_playwright_playwright__browser_take_screenshot",
+      "mcp__plugin_playwright_playwright__browser_close",
+      "mcp__plugin_playwright_playwright__browser_console_messages",
+      "Bash(git push origin main)",
+      "Bash(cd /Users/sinawork/Desktop/Github\\\\ pricing-app/pricing-app && npx:*)",
+      "Bash(killall node:*)",
+      "Bash(pkill:*)",
+      "Bash(chmod:*)",
+      "Bash(npm test)",
+      "Bash(npm test:*)",
+      "Bash(supabase --version:*)",
+      "Bash(supabase link --project-ref xxiouegchvnmxmfcywsp)",
+      "Bash(cd:*)",
+      "Bash(cd /Users/sinawork/Desktop/Github\\\\ pricing-app/pricing-app && supabase functions deploy:*)",
+      "Bash(supabase functions:*)",
+      "Bash(python3:*)"
     ]
   }
 }

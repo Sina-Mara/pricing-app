@@ -9,11 +9,12 @@ export function cn(...inputs: ClassValue[]) {
  * Format currency value
  */
 export function formatCurrency(value: number): string {
+  const decimals = Math.abs(value) > 0 && Math.abs(value) < 0.1 ? 4 : 2
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'EUR',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
   }).format(value)
 }
 

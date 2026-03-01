@@ -336,7 +336,7 @@ export default function ForecastMapping() {
                           />
                         </TableCell>
                         <TableCell>
-                          <div className="flex gap-1">
+                          <div className="flex gap-2">
                             <Button
                               variant="ghost"
                               size="sm"

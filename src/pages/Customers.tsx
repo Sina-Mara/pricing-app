@@ -236,7 +236,7 @@ export default function Customers() {
                       {formatDate(customer.created_at)}
                     </TableCell>
                     <TableCell>
-                      <div className="flex gap-1">
+                      <div className="flex gap-2">
                         <Button
                           variant="ghost"
                           size="icon"

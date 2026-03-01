@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useForecastSave, configToYearlyRows } from '@/hooks/useForecastSave'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Save, FileText, FolderOpen, Trash2, Plus, ChevronDown, Pencil, Copy,
@@ -51,9 +52,6 @@ import { CreateScenarioModal, type CreateScenarioOptions } from '@/components/Cr
 import { ScenarioSelectionModal, type QuoteType } from '@/components/ScenarioSelectionModal'
 import {
   interpolateYearlyToMonthly,
-  calculatePeriodForecast,
-  DEFAULT_FORECAST_CONFIG,
-  type ForecastConfig,
 } from '@/lib/timeseries-pricing'
 import { handleCreateScenarios, getScenariosByIds } from '@/lib/scenario-generator'
 import type { Customer, TimeseriesForecast, ForecastScenario } from '@/types/database'
@@ -143,42 +141,6 @@ function formatNumber(num: number, decimals: number = 0): string {
   })
 }
 
-/**
- * Generate a unique ID for a new row
- */
-function generateRowId(): string {
-  return `row-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-}
-
-/**
- * Convert YearlyForecastRow array to the format stored in the config field
- */
-function yearlyRowsToConfig(rows: YearlyForecastRow[]): object {
-  return {
-    yearlyData: rows.map(r => ({
-      year: r.year,
-      endOfYearSims: r.endOfYearSims,
-      totalDataUsageGB: r.totalDataUsageGB,
-    }))
-  }
-}
-
-/**
- * Extract YearlyForecastRow array from the config field
- */
-function configToYearlyRows(config: unknown): YearlyForecastRow[] {
-  if (!config || typeof config !== 'object') return []
-  const c = config as { yearlyData?: Array<{ year: number; endOfYearSims: number; totalDataUsageGB: number }> }
-  if (!c.yearlyData || !Array.isArray(c.yearlyData)) return []
-
-  return c.yearlyData.map(d => ({
-    id: generateRowId(),
-    year: d.year,
-    endOfYearSims: d.endOfYearSims,
-    totalDataUsageGB: d.totalDataUsageGB,
-  }))
-}
-
 // The config field from DB can be any JSON, so we use a more permissive type here
 type TimeseriesForecastWithConfig = Omit<TimeseriesForecast, 'config'> & {
   config?: unknown
@@ -189,6 +151,7 @@ export default function YearlyForecastPage() {
   const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const { toast } = useToast()
+  const { saveForecast } = useForecastSave()
 
   // State for forecast data
   const [yearlyData, setYearlyData] = useState<YearlyForecastRow[]>([])
@@ -202,7 +165,6 @@ export default function YearlyForecastPage() {
   const [forecastName, setForecastName] = useState('')
   const [forecastDescription, setForecastDescription] = useState('')
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
-  const [config] = useState<ForecastConfig>(DEFAULT_FORECAST_CONFIG)
   const [createScenariosModalOpen, setCreateScenariosModalOpen] = useState(false)
 
   // State for scenario selection and quote creation
@@ -338,124 +300,19 @@ export default function YearlyForecastPage() {
     setHasUnsavedChanges(true)
   }, [])
 
-  // Save forecast mutation
+  // Save forecast mutation (wraps useForecastSave hook for page-specific side effects)
   const saveForecastMutation = useMutation({
     mutationFn: async (isNew: boolean) => {
-      if (yearlyData.length === 0) {
-        throw new Error('No forecast data to save')
-      }
-
-      if (!forecastName.trim()) {
-        throw new Error('Please enter a forecast name')
-      }
-
-      // Calculate monthly data points for storage
-      const yearlyDataPoints = yearlyData
-        .filter(r => r.endOfYearSims > 0)
-        .map(r => ({
-          year: r.year,
-          totalSims: r.endOfYearSims,
-          totalDataUsageGb: r.totalDataUsageGB,
-        }))
-
-      if (yearlyDataPoints.length === 0) {
-        throw new Error('At least one year must have valid SIM data')
-      }
-
-      const interpolated = interpolateYearlyToMonthly(yearlyDataPoints)
-
-      if (interpolated.length === 0) {
-        throw new Error('Failed to interpolate monthly data')
-      }
-
-      // Calculate start/end dates
-      const startDate = interpolated[0].date
-      const endDate = interpolated[interpolated.length - 1].date
-
-      // Prepare forecast data
-      const forecastData = {
-        customer_id: selectedCustomerId,
-        name: forecastName.trim(),
-        description: forecastDescription.trim() || null,
-        granularity: 'yearly' as const,
-        start_date: startDate.toISOString().split('T')[0],
-        end_date: endDate.toISOString().split('T')[0],
-        total_periods: interpolated.length,
-        take_rate_pcs_udr: config.takeRatePcsUdr,
-        take_rate_ccs_udr: config.takeRateCcsUdr,
-        take_rate_scs_pcs: config.takeRateScsPcs,
-        peak_average_ratio: config.peakAverageRatio,
-        busy_hours: config.busyHours,
-        days_per_month: config.daysPerMonth,
-        original_filename: null,
-        // Store original yearly data in config for later retrieval
-        config: yearlyRowsToConfig(yearlyData),
-      }
-
-      let forecastId: string
-
-      if (isNew || !selectedForecastId) {
-        // Create new forecast
-        const { data: forecast, error: forecastError } = await supabase
-          .from('timeseries_forecasts')
-          .insert(forecastData)
-          .select()
-          .single()
-
-        if (forecastError) throw forecastError
-        forecastId = forecast.id
-      } else {
-        // Update existing forecast
-        const { error: forecastError } = await supabase
-          .from('timeseries_forecasts')
-          .update(forecastData)
-          .eq('id', selectedForecastId)
-
-        if (forecastError) throw forecastError
-        forecastId = selectedForecastId
-
-        // Delete existing data points
-        const { error: deleteError } = await supabase
-          .from('timeseries_forecast_data')
-          .delete()
-          .eq('forecast_id', forecastId)
-
-        if (deleteError) throw deleteError
-      }
-
-      // Insert interpolated monthly data points
-      const dataPoints = interpolated.map((m, idx) => {
-        // Calculate forecast outputs using the pricing engine
-        const gbPerSimMonthly = m.gbPerSim / 12 // Convert yearly GB/SIM to monthly
-        const forecast = calculatePeriodForecast(m.totalSims, gbPerSimMonthly, config)
-
-        return {
-          forecast_id: forecastId,
-          period_index: idx + 1,
-          period_date: m.date.toISOString().split('T')[0],
-          total_sims: m.totalSims,
-          gb_per_sim: gbPerSimMonthly,
-          output_udr: forecast.udr,
-          output_pcs: forecast.pcs,
-          output_ccs: forecast.ccs,
-          output_scs: forecast.scs,
-          output_cos: forecast.cos,
-          output_peak_throughput: forecast.peakThroughput,
-          output_avg_throughput: forecast.avgThroughput,
-          output_data_volume_gb: forecast.dataVolumeGb,
-        }
+      const forecastId = (isNew || !selectedForecastId) ? null : selectedForecastId
+      return saveForecast({
+        yearlyData,
+        forecastName,
+        description: forecastDescription,
+        customerId: selectedCustomerId,
+        forecastId,
       })
-
-      const { error: dataError } = await supabase
-        .from('timeseries_forecast_data')
-        .insert(dataPoints)
-
-      if (dataError) throw dataError
-
-      return { id: forecastId, name: forecastName }
     },
     onSuccess: (data, isNew) => {
-      queryClient.invalidateQueries({ queryKey: ['timeseries-forecasts'] })
       setSelectedForecastId(data.id)
       setHasUnsavedChanges(false)
       setSaveDialogOpen(false)
@@ -468,7 +325,7 @@ export default function YearlyForecastPage() {
     onError: (error) => {
       toast({
         title: 'Error saving forecast',
-        description: error.message,
+        description: error instanceof Error ? error.message : 'Error saving forecast',
         variant: 'destructive',
       })
     }

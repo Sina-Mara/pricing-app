@@ -1,6 +1,18 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Agent behavior instructions for Claude Code. For project documentation, see `docs/`.
+
+## Project Overview
+
+**Pricing App** — Enterprise B2B SaaS pricing engine and quote management system for telecom/infrastructure products. React 18 + TypeScript + Vite frontend with Supabase (PostgreSQL + Edge Functions) backend.
+
+### Core Pricing Formula
+
+```
+Final Price = Base Price × Volume Factor × Term Factor × Env Factor
+```
+
+For full pricing details, see `docs/PRICING-OVERVIEW.md`.
 
 ## Build & Development Commands
 
@@ -24,74 +36,6 @@ npx vitest run -t "smooth mode"
 
 Environment variables (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`) must be set in `.env` — see `.env.example`.
 
-## Architecture
-
-**Enterprise B2B SaaS pricing engine** for telecom/infrastructure products. React 18 + TypeScript + Vite frontend with Supabase (PostgreSQL + Edge Functions) backend.
-
-### Core Pricing Formula
-
-```
-Final Price = Base Price × Volume Factor × Term Factor × Env Factor
-```
-
-- **Volume discounts**: Exponential decay with geometric bounds (stepped/smooth/manual modes)
-- **Term factors**: Linear interpolation between known commitment-length points, per SKU category (CAS/CNO/CCS/default)
-- **Environment factors**: Production vs reference multipliers
-- **Time-phased aggregation**: Weighted averaging across contract phases
-- **Time-series pricing**: Pay-per-use (monthly) or fixed commitment (peak/avg/P90/P95)
-
-### Key Source Directories
-
-- `src/lib/` — Pure business logic: pricing algorithms, quote/scenario generation, Excel parsing, PDF export
-- `src/pages/` — Route-level page components (20 pages)
-- `src/pages/admin/` — Admin configuration pages (6 pages for pricing rules, term factors, base charges, etc.)
-- `src/components/ui/` — Radix/Shadcn UI primitives
-- `src/components/` — Domain-specific components (modals, uploaders, charts, pickers)
-- `src/types/database.ts` — All TypeScript type definitions (~495 lines)
-- `src/contexts/AuthContext.tsx` — Supabase auth state
-- `tests/pricing/` — Unit tests for pricing algorithms
-- `tests/e2e/` — Playwright E2E tests
-- `supabase/migrations/` — 7 SQL migrations (run in order, 001–007)
-- `supabase/functions/calculate-pricing/` — Supabase Edge Function (Deno runtime, not Node.js) for pricing calculations
-
-### Forecast-to-Quote Flow
-
-This is the primary multi-step workflow:
-
-1. **YearlyForecastPage** — User enters yearly SIMs & data usage, saves to `timeseries_forecasts`
-2. **CreateScenarioModal** — Generates per-year or consolidated scenarios, saves to `forecast_scenarios`
-3. **ScenarioSelectionModal** — User picks scenarios + quote type (commitment vs pay-per-use)
-4. **QuoteBuilder** — Receives scenario IDs via React Router state, renders commitment mode selector (max vs yearly) and strategy picker (peak/avg/specific year)
-5. **Quote generation** — `generateMultiModeCommitmentQuote()` or `generatePerPeriodPayPerUseQuote()` from `src/lib/quote-generator.ts`
-
-### State Management
-
-- **Server state**: TanStack React Query (Supabase queries with caching)
-- **Local state**: React useState/useReducer within page components
-- **Auth**: Supabase Auth (Email + Google OAuth) wrapped in `AuthContext`, guarded by `ProtectedRoute`
-- **Routing**: React Router DOM v6 with route state for passing data between pages
-
-### Quote Versioning
-
-Quotes support versioning via `version_group_id` (groups related versions) and `version_number` (incrementing integer). Creating a new version of a quote copies it with an incremented version number under the same group.
-
-### Database
-
-**Supabase PostgreSQL** with 7 migrations in `supabase/migrations/`. Edge function in `supabase/functions/calculate-pricing/`.
-
-**Core tables**: `skus`, `customers`, `quotes`, `quote_packages`, `quote_items`
-**Config tables**: `pricing_models`, `ladders`, `term_factors`, `base_charges`, `env_factors`, `perpetual_config`, `forecast_sku_mappings`
-**Forecast tables**: `forecast_scenarios`, `timeseries_forecasts`, `timeseries_forecast_data`
-
-### Key Enums (PostgreSQL)
-
-- `pricing_mode`: stepped | smooth | manual
-- `sku_category`: default | cas | cno | ccs
-- `environment_type`: production | reference
-- `quote_status`: draft | pending | sent | accepted | rejected | expired | ordered
-- `quote_type`: commitment | pay_per_use
-- `package_status`: new | ordered | existing | cancelled
-
 ## Code Conventions
 
 - Path alias: `@/*` maps to `./src/*` (use `@/components/...` not relative paths)
@@ -99,14 +43,103 @@ Quotes support versioning via `version_group_id` (groups related versions) and `
 - Styling: Tailwind CSS with dark mode (class-based), custom HSL color variables
 - Components: PascalCase filenames, one component per file
 - Business logic lives in `src/lib/`, not in components
-- **GB/SIM convention**: The DB column `forecast_scenarios.gb_per_sim` stores **monthly** values. The UI displays **yearly** GB/SIM everywhere (labeled "GB/SIM/yr"). Convert with `× 12` when loading from DB and `/ 12` when saving to DB. The `scenario-generator.ts` functions (`calculateMonthlyGbPerSim`, `generatePerYearScenarios`, etc.) produce monthly values for DB storage.
+- Unit tests use Vitest with jsdom + `@testing-library/react`. E2E tests use Playwright with Chromium.
+- **GB/SIM convention**: The DB column `forecast_scenarios.gb_per_sim` stores **monthly** values. The UI displays **yearly** GB/SIM everywhere (labeled "GB/SIM/yr"). Convert with `× 12` when loading from DB and `/ 12` when saving to DB. The `scenario-generator.ts` functions produce monthly values for DB storage.
 
-## Documentation
+## Workflow Rules (Non-Negotiable)
 
-- `docs/SPECIFICATION.md` — Features and data model
-- `docs/IMPLEMENTATION.md` — Technical architecture and algorithms
-- `docs/PRICING-OVERVIEW.md` — Pricing algorithm explanation
+### Spec-Driven Development
+1. **Spec First:** Write specification to `docs/` before any code changes
+2. **Review Gate:** Ask for user approval before implementing
+3. **Task Tracking:** Use Claude Code Tasks to track implementation
+4. **Incremental:** One task at a time, mark completed before next
 
-## Testing
+### Agentic Task Execution (Required)
 
-Unit tests use Vitest with jsdom + `@testing-library/react` for component tests. Test setup is in `tests/setup.ts`. E2E tests use Playwright with Chromium, auto-starting the dev server. Playwright takes screenshots on failure and traces on retry.
+When implementing any spec or feature:
+
+1. **Preflight Check (Always First)**
+   - Use `Explore` subagent to analyze the spec document
+   - Map spec requirements to current codebase state
+   - Identify what exists, what's missing, what needs modification
+   - Summarize findings before proceeding
+
+2. **Task Breakdown & Dependencies**
+   - Create tasks using `TaskCreate` for each implementation unit
+   - Set up dependencies with `TaskUpdate` (addBlockedBy)
+   - Identify which tasks can run in parallel
+   - Present task graph to user
+
+3. **User Confirmation Gate**
+   - **ALWAYS** ask user to confirm before starting tasks
+   - Show: task list, dependencies, parallel opportunities
+   - Wait for explicit "yes", "start", "continue", or similar
+
+4. **Parallel Subagent Execution**
+   - Launch independent tasks in parallel using multiple `Task` tool calls
+   - Use `general-purpose` subagent for implementation work
+   - Use `Explore` subagent for research/analysis
+   - Mark tasks `in_progress` before starting, `completed` when done
+
+5. **Human Checkpoints**
+   - After completing parallel task batches, summarize results
+   - Ask user to confirm before proceeding to dependent tasks
+   - On errors or blockers, stop and ask for guidance
+   - Never proceed past a failed task without user input
+
+### Asking Questions
+- Use `AskUserQuestion` tool for decision points with 2-4 options
+- Use `Explore` subagent for codebase research (not manual Glob/Grep)
+- Use `Plan` subagent before complex implementations
+
+## Agent Distribution
+
+For building and maintaining this application, work can be distributed across specialized agents:
+
+### Frontend UI Agent
+**Scope:** React components, pages, Tailwind/Shadcn styling, form validation, React Query state
+
+### Backend/Database Agent
+**Scope:** Supabase migrations, Edge Functions (Deno runtime), database schemas, RLS policies
+
+### Algorithm/Business Logic Agent
+**Scope:** Pricing formulas in `src/lib/`, calculation edge cases, algorithm optimization
+
+### Testing Agent
+**Scope:** Vitest unit tests in `tests/pricing/`, Playwright E2E tests in `tests/e2e/`, test fixtures and coverage
+
+### Task Distribution
+
+| Task Type | Primary Agent | Collaboration |
+|-----------|---------------|---------------|
+| New Admin Page | Frontend UI | Backend (API) |
+| Pricing Algorithm | Algorithm | Testing (validation) |
+| Database Migration | Backend | Frontend (types) |
+| E2E Test Suite | Testing | Frontend (selectors) |
+| Bug Fix (UI) | Frontend UI | — |
+| Bug Fix (Calc) | Algorithm | Testing (regression) |
+
+### Parallel Execution
+
+Independent streams that can run concurrently:
+- **Stream 1:** Frontend pages/components
+- **Stream 2:** Backend functions/migrations
+- **Stream 3:** Tests
+
+**Synchronization points:** After backend API changes → frontend integration. After algorithm changes → test validation.
+
+## Key Locations
+
+| Path | Purpose |
+|------|---------|
+| `src/lib/` | Pure business logic: pricing, quotes, scenarios, Excel, PDF |
+| `src/pages/` | Route-level page components |
+| `src/pages/admin/` | Admin configuration pages |
+| `src/components/ui/` | Radix/Shadcn UI primitives |
+| `src/types/database.ts` | All TypeScript type definitions |
+| `src/contexts/AuthContext.tsx` | Supabase auth state |
+| `tests/pricing/` | Unit tests for pricing algorithms |
+| `tests/e2e/` | Playwright E2E tests |
+| `supabase/migrations/` | SQL migrations (run in order) |
+| `supabase/functions/calculate-pricing/` | Edge Function (Deno runtime) |
+| `docs/` | Specifications and documentation |

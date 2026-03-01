@@ -230,7 +230,7 @@ export default function PricingModels() {
                       />
                     </TableCell>
                     <TableCell>
-                      <div className="flex gap-1">
+                      <div className="flex gap-2">
                         <Button
                           variant="ghost"
                           size="icon"
