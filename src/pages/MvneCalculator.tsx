@@ -868,6 +868,21 @@ export default function MvneCalculator() {
 // HELPER COMPONENTS
 // ============================================================================
 
+function formatWithSeparators(v: number): string {
+  if (!v) return ''
+  // Integer values: no decimals. Decimal values: preserve up to 4 digits.
+  const hasDecimals = v % 1 !== 0
+  return new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: hasDecimals ? 4 : 0,
+  }).format(v)
+}
+
+function parseFormatted(s: string): number {
+  // Strip thousand-separator commas, keep decimal dot
+  return parseFloat(s.replace(/,/g, '')) || 0
+}
+
 function NumberField({
   label,
   value,
@@ -879,15 +894,21 @@ function NumberField({
   onChange: (v: number) => void
   step?: number
 }) {
+  const [focused, setFocused] = useState(false)
+  const [raw, setRaw] = useState('')
+
   return (
     <div className="space-y-1.5">
       <Label className="text-xs">{label}</Label>
       <Input
-        type="number"
+        type={focused ? 'text' : 'text'}
+        inputMode="decimal"
         min={0}
         step={step}
-        value={value || ''}
-        onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+        value={focused ? raw : formatWithSeparators(value)}
+        onFocus={() => { setFocused(true); setRaw(value ? String(value) : '') }}
+        onBlur={() => { setFocused(false); onChange(parseFormatted(raw)) }}
+        onChange={(e) => { setRaw(e.target.value); onChange(parseFormatted(e.target.value)) }}
         className="h-8"
       />
     </div>
@@ -920,6 +941,9 @@ function SkuRow({
   const hasVolDiscount = qty > 0 && volPrice < listPrice
   const cost = qty * volPrice * (1 - disc / 100)
 
+  const [focused, setFocused] = useState(false)
+  const [raw, setRaw] = useState('')
+
   return (
     <TableRow key={code}>
       <TableCell className="font-medium">{SKU_DISPLAY[code]}</TableCell>
@@ -927,10 +951,12 @@ function SkuRow({
         <div className="flex items-center gap-1">
           <div className="relative flex-1">
             <Input
-              type="number"
-              min={0}
-              value={qty || ''}
-              onChange={(e) => onQtyChange(code, parseFloat(e.target.value) || 0)}
+              type="text"
+              inputMode="decimal"
+              value={focused ? raw : formatWithSeparators(qty)}
+              onFocus={() => { setFocused(true); setRaw(qty ? String(qty) : '') }}
+              onBlur={() => { setFocused(false); onQtyChange(code, parseFormatted(raw)) }}
+              onChange={(e) => { setRaw(e.target.value); onQtyChange(code, parseFormatted(e.target.value)) }}
               className={`h-8 ${isAutoActive ? 'bg-muted/50 pr-8' : ''}`}
             />
             {isAutoActive && (
