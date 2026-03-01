@@ -17,7 +17,9 @@ import Calculator from '@/pages/Calculator'
 import ForecastEvaluator from '@/pages/ForecastEvaluator'
 import TimeSeriesForecast from '@/pages/TimeSeriesForecast'
 import YearlyForecastPage from '@/pages/YearlyForecastPage'
+import ForecastWizardPage from '@/pages/ForecastWizardPage'
 import Settings from '@/pages/Settings'
+import MvneCalculator from '@/pages/MvneCalculator'
 import Timeline from '@/pages/Timeline'
 
 // Admin Pages
@@ -52,9 +54,11 @@ export default function App() {
           <Route path="/skus" element={<SKUs />} />
           <Route path="/customers" element={<Customers />} />
           <Route path="/calculator" element={<Calculator />} />
+          <Route path="/mvne-calculator" element={<MvneCalculator />} />
           <Route path="/forecast" element={<ForecastEvaluator />} />
           <Route path="/forecast/timeseries" element={<TimeSeriesForecast />} />
           <Route path="/forecast/yearly" element={<YearlyForecastPage />} />
+          <Route path="/forecast/wizard" element={<ForecastWizardPage />} />
           <Route path="/settings" element={<Settings />} />
 
           {/* Admin Routes */}

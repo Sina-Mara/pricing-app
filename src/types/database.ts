@@ -495,6 +495,36 @@ export interface TimeseriesPricingComparison {
   savingsPercent: number
 }
 
+// MVNE Calculator types
+export interface MvneCapacityInputs {
+  num_mvnos: number
+  subs_per_mvno: number
+  parallel_take_rate: number
+  aggregate_throughput_mbps: number
+  num_local_breakouts: number
+  breakout_capacity_mbps: number
+  num_grx_sites: number
+  apns_per_mvno: number
+}
+
+export interface MvneExternalCosts {
+  infrastructure: number
+  grx: number
+  esim: number
+}
+
+export interface MvneCalculatorConfig {
+  id: string
+  name: string
+  description: string | null
+  capacity_inputs: MvneCapacityInputs
+  sku_quantities: Record<string, number>
+  external_costs: MvneExternalCosts
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
 // Quote with timeseries support
 export interface QuoteWithTimeseries extends Quote {
   source_timeseries_id: string | null
