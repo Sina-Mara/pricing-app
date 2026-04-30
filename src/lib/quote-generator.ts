@@ -359,6 +359,21 @@ export async function fetchSkuMappings(): Promise<(ForecastSkuMapping & { sku: S
   return data as (ForecastSkuMapping & { sku: Sku })[]
 }
 
+export async function fetchBaseChargeSkus(): Promise<Sku[]> {
+  const { data, error } = await supabase
+    .from('skus')
+    .select('*')
+    .eq('is_base_charge', true)
+    .eq('is_active', true)
+    .order('code')
+
+  if (error) {
+    throw new Error(`Failed to fetch base charge SKUs: ${error.message}`)
+  }
+
+  return data as Sku[]
+}
+
 /**
  * Maps aggregated values to KPI type record
  */
@@ -426,6 +441,34 @@ async function insertManualItems(
   }
 
   return itemsToInsert.length
+}
+
+async function insertBaseChargeItems(
+  packageId: string,
+  baseSkus: Sku[],
+  startSortOrder: number,
+  notePrefix: string,
+): Promise<number> {
+  if (baseSkus.length === 0) return 0
+
+  const itemsToCreate = baseSkus.map((sku, index) => ({
+    package_id: packageId,
+    sku_id: sku.id,
+    quantity: 1,
+    environment: 'production' as const,
+    sort_order: startSortOrder + index,
+    notes: `${notePrefix} - base charge`,
+  }))
+
+  const { error } = await supabase
+    .from('quote_items')
+    .insert(itemsToCreate)
+
+  if (error) {
+    throw new Error(`Failed to insert base charge items: ${error.message}`)
+  }
+
+  return itemsToCreate.length
 }
 
 // =============================================================================
@@ -530,8 +573,8 @@ export async function generateCommitmentQuote(
   // Step 1: Aggregate scenario values
   const aggregatedValues = aggregateScenarioValues(scenarios, strategy, specificYear)
 
-  // Step 2: Fetch SKU mappings
-  const mappings = await fetchSkuMappings()
+  // Step 2: Fetch SKU mappings and base charge SKUs
+  const [mappings, baseSkus] = await Promise.all([fetchSkuMappings(), fetchBaseChargeSkus()])
 
   if (mappings.length === 0) {
     throw new Error('No active SKU mappings configured. Please configure mappings in Admin > Forecast Mapping.')
@@ -624,6 +667,14 @@ export async function generateCommitmentQuote(
     )
   }
 
+  // Step 5c: Insert base charge SKUs (qty=1 each)
+  const baseCount = await insertBaseChargeItems(
+    pkg.id,
+    baseSkus,
+    itemsToCreate.length + manualCount + 1,
+    packageName,
+  )
+
   // Step 6: Trigger pricing calculation
   try {
     await invokeEdgeFunction<CalculatePricingResponse>(
@@ -641,7 +692,7 @@ export async function generateCommitmentQuote(
     packageIds: [pkg.id],
     packageCount: 1,
     quoteNumber: quote.quote_number,
-    itemCount: itemsToCreate.length + manualCount,
+    itemCount: itemsToCreate.length + manualCount + baseCount,
   }
 }
 
@@ -660,7 +711,7 @@ export async function generatePayPerUseQuote(
 
   // Use peak values for pay-per-use sizing
   const aggregatedValues = aggregatePeakValues(scenarios)
-  const mappings = await fetchSkuMappings()
+  const [mappings, baseSkus] = await Promise.all([fetchSkuMappings(), fetchBaseChargeSkus()])
 
   if (mappings.length === 0) {
     throw new Error('No active SKU mappings configured.')
@@ -731,6 +782,14 @@ export async function generatePayPerUseQuote(
     }
   }
 
+  // Insert base charge SKUs (qty=1 each)
+  const baseCount = await insertBaseChargeItems(
+    pkg.id,
+    baseSkus,
+    itemsToCreate.length + 1,
+    scenarioName,
+  )
+
   try {
     await invokeEdgeFunction<CalculatePricingResponse>(
       'calculate-pricing',
@@ -746,7 +805,7 @@ export async function generatePayPerUseQuote(
     packageIds: [pkg.id],
     packageCount: 1,
     quoteNumber: quote.quote_number,
-    itemCount: itemsToCreate.length,
+    itemCount: itemsToCreate.length + baseCount,
   }
 }
 
@@ -959,8 +1018,8 @@ export async function generateMaxCommitmentQuote(
   // Aggregate scenario values using the specified strategy
   const aggregatedValues = aggregateScenarioValues(scenarios, strategy)
 
-  // Fetch SKU mappings
-  const mappings = await fetchSkuMappings()
+  // Fetch SKU mappings and base charge SKUs
+  const [mappings, baseSkus] = await Promise.all([fetchSkuMappings(), fetchBaseChargeSkus()])
   if (mappings.length === 0) {
     throw new Error('No active SKU mappings configured. Please configure mappings in Admin > Forecast Mapping.')
   }
@@ -1052,6 +1111,14 @@ export async function generateMaxCommitmentQuote(
     )
   }
 
+  // Insert base charge SKUs (qty=1 each)
+  const baseCount = await insertBaseChargeItems(
+    pkg.id,
+    baseSkus,
+    itemsToCreate.length + manualCount + 1,
+    packageName,
+  )
+
   // Trigger pricing calculation
   try {
     await invokeEdgeFunction<CalculatePricingResponse>(
@@ -1068,7 +1135,7 @@ export async function generateMaxCommitmentQuote(
     packageIds: [pkg.id],
     packageCount: 1,
     quoteNumber: quote.quote_number,
-    itemCount: itemsToCreate.length + manualCount,
+    itemCount: itemsToCreate.length + manualCount + baseCount,
   }
 }
 
@@ -1105,8 +1172,8 @@ export async function generateYearlyCommitmentQuote(
     })),
   })
 
-  // Fetch SKU mappings
-  const mappings = await fetchSkuMappings()
+  // Fetch SKU mappings and base charge SKUs
+  const [mappings, baseSkus] = await Promise.all([fetchSkuMappings(), fetchBaseChargeSkus()])
   if (mappings.length === 0) {
     throw new Error('No active SKU mappings configured. Please configure mappings in Admin > Forecast Mapping.')
   }
@@ -1208,7 +1275,15 @@ export async function generateYearlyCommitmentQuote(
       )
     }
 
-    totalItemCount += itemsToCreate.length + manualCount
+    // Insert base charge SKUs for this year's package (qty=1 each)
+    const baseCount = await insertBaseChargeItems(
+      pkg.id,
+      baseSkus,
+      itemsToCreate.length + manualCount + 1,
+      packageName,
+    )
+
+    totalItemCount += itemsToCreate.length + manualCount + baseCount
     sortOrder++
   }
 
@@ -1328,8 +1403,8 @@ export async function generatePerPeriodPayPerUseQuote(
     gbitPerGb: DEFAULT_FORECAST_CONFIG.gbitPerGb,
   }
 
-  // Fetch SKU mappings
-  const mappings = await fetchSkuMappings()
+  // Fetch SKU mappings and base charge SKUs
+  const [mappings, baseSkus] = await Promise.all([fetchSkuMappings(), fetchBaseChargeSkus()])
   if (mappings.length === 0) {
     throw new Error('No active SKU mappings configured. Please configure mappings in Admin > Forecast Mapping.')
   }
@@ -1445,7 +1520,15 @@ export async function generatePerPeriodPayPerUseQuote(
       )
     }
 
-    totalItemCount += itemsToCreate.length + manualCount
+    // Insert base charge SKUs for this month's package (qty=1 each)
+    const baseCount = await insertBaseChargeItems(
+      pkg.id,
+      baseSkus,
+      itemsToCreate.length + manualCount + 1,
+      packageName,
+    )
+
+    totalItemCount += itemsToCreate.length + manualCount + baseCount
   }
 
   // Trigger pricing calculation

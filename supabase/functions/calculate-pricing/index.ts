@@ -124,6 +124,8 @@ interface WeightedPriceData {
 
 interface QuotePackage {
   id: string;
+  quote_id?: string;
+  package_name?: string;
   term_months: number;
   start_date?: string;
   end_date?: string;
@@ -1049,6 +1051,8 @@ serve(async (req) => {
       // Convert packages to typed format
       const packages: QuotePackage[] = quote.quote_packages.map((pkg: any) => ({
         id: pkg.id,
+        quote_id: pkg.quote_id,
+        package_name: pkg.package_name,
         term_months: pkg.term_months,
         start_date: pkg.start_date,
         end_date: pkg.end_date,
@@ -1088,6 +1092,18 @@ serve(async (req) => {
         quoteTotalAnnual += result.annual_total;
       }
 
+      // Build lookup maps for required fields needed by upsert
+      // PostgREST merge-duplicates upsert attempts INSERT first, so NOT NULL columns
+      // must be present even when updating existing rows.
+      const itemMap = new Map<string, QuoteItem>();
+      for (const item of allItems) {
+        itemMap.set(item.id, item);
+      }
+      const pkgMap = new Map<string, QuotePackage>();
+      for (const pkg of packages) {
+        pkgMap.set(pkg.id, pkg);
+      }
+
       // Build package subtotals
       const itemPackageMap = new Map<string, string>();
       for (const item of allItems) {
@@ -1105,29 +1121,41 @@ serve(async (req) => {
       // Batch all writes in parallel: item upsert + package upserts + quote update
       await Promise.all([
         supabase.from('quote_items').upsert(
-          results.map(r => ({
-            id: r.item_id,
-            list_price: r.list_price,
-            volume_discount_pct: r.volume_discount_pct,
-            term_discount_pct: r.term_discount_pct,
-            env_factor: r.env_factor,
-            unit_price: r.unit_price,
-            total_discount_pct: r.total_discount_pct,
-            usage_total: r.usage_total,
-            base_charge: r.base_charge,
-            monthly_total: r.monthly_total,
-            annual_total: r.annual_total,
-            aggregated_qty: r.aggregated_qty,
-            pricing_phases: r.pricing_phases,
-            ratio_factor: r.ratio_factor,
-          }))
+          results.map(r => {
+            const orig = itemMap.get(r.item_id)!;
+            return {
+              id: r.item_id,
+              package_id: orig.package_id,
+              sku_id: orig.sku_id,
+              quantity: orig.quantity,
+              list_price: r.list_price,
+              volume_discount_pct: r.volume_discount_pct,
+              term_discount_pct: r.term_discount_pct,
+              env_factor: r.env_factor,
+              unit_price: r.unit_price,
+              total_discount_pct: r.total_discount_pct,
+              usage_total: r.usage_total,
+              base_charge: r.base_charge,
+              monthly_total: r.monthly_total,
+              annual_total: r.annual_total,
+              aggregated_qty: r.aggregated_qty,
+              pricing_phases: r.pricing_phases,
+              ratio_factor: r.ratio_factor,
+            };
+          })
         ),
         supabase.from('quote_packages').upsert(
-          Array.from(pkgTotals.entries()).map(([pkgId, totals]) => ({
-            id: pkgId,
-            subtotal_monthly: round2(totals.monthly),
-            subtotal_annual: round2(totals.annual),
-          }))
+          Array.from(pkgTotals.entries()).map(([pkgId, totals]) => {
+            const orig = pkgMap.get(pkgId)!;
+            return {
+              id: pkgId,
+              quote_id: orig.quote_id ?? (quote as any).id,
+              package_name: orig.package_name,
+              term_months: orig.term_months,
+              subtotal_monthly: round2(totals.monthly),
+              subtotal_annual: round2(totals.annual),
+            };
+          })
         ),
         supabase.from('quotes').update({
           total_monthly: round2(quoteTotalMonthly),

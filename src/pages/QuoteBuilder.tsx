@@ -82,6 +82,7 @@ import {
   generatePerPeriodPayPerUseQuote,
   getTermTierLabel,
   extractYearsFromScenarios,
+  fetchBaseChargeSkus,
 } from '@/lib/quote-generator'
 import { ManualSkuInput } from '@/components/ManualSkuInput'
 import { SkuCatalogDialog } from '@/components/SkuCatalogDialog'
@@ -134,6 +135,8 @@ export default function QuoteBuilder() {
   const [newPackageName, setNewPackageName] = useState('')
   const [newPackageTerm, setNewPackageTerm] = useState(12)
   const [versionName, setVersionName] = useState('')
+  const [newVersionType, setNewVersionType] = useState<QuoteType>('commitment')
+  const [newVersionTermMonths, setNewVersionTermMonths] = useState(DEFAULT_COMMITMENT_TERM)
   const [calculating, setCalculating] = useState(false)
   const [saving, setSaving] = useState(false)
   const [applyingForecast, setApplyingForecast] = useState(false)
@@ -302,6 +305,17 @@ export default function QuoteBuilder() {
       })
       // Expand all packages by default
       setExpandedPackages(new Set(quote.quote_packages.map(p => p.id)))
+      // Infer term from first package (skip PPU term=1)
+      const firstPkgTerm = quote.quote_packages[0]?.term_months
+      if (firstPkgTerm && firstPkgTerm > 1) {
+        setSelectedTermMonths(firstPkgTerm)
+      }
+      // Prime version dialog with current quote's type and term
+      const qt = (quote.quote_type || 'commitment') as QuoteType
+      setNewVersionType(qt)
+      if (qt === 'commitment' && firstPkgTerm && firstPkgTerm > 1) {
+        setNewVersionTermMonths(firstPkgTerm)
+      }
     }
   }, [quote])
 
@@ -497,6 +511,23 @@ export default function QuoteBuilder() {
         if (itemsError) throw itemsError
       }
 
+      // Insert base charge SKUs (qty=1 each)
+      const baseSkus = await fetchBaseChargeSkus()
+      if (baseSkus.length > 0) {
+        const baseItemsToCreate = baseSkus.map((sku, index) => ({
+          package_id: pkg.id,
+          sku_id: sku.id,
+          quantity: 1,
+          environment: 'production' as const,
+          sort_order: itemsToCreate.length + index + 1,
+          notes: 'Auto-generated base charge',
+        }))
+        const { error: baseItemsError } = await supabase
+          .from('quote_items')
+          .insert(baseItemsToCreate)
+        if (baseItemsError) throw baseItemsError
+      }
+
       // Trigger pricing calculation immediately for pay-per-use quotes
       if (quoteType === 'pay_per_use') {
         try {
@@ -511,7 +542,7 @@ export default function QuoteBuilder() {
 
       toast({
         title: 'Forecast applied',
-        description: `Created ${itemsToCreate.length} line items from forecast data${quoteType === 'pay_per_use' ? ' (Pay-per-Use, 1-month term)' : ` (${termMonths}-month term)`}.`,
+        description: `Created ${itemsToCreate.length + baseSkus.length} line items from forecast data${quoteType === 'pay_per_use' ? ' (Pay-per-Use, 1-month term)' : ` (${termMonths}-month term)`}.`,
       })
 
       // Refetch quote data
@@ -572,6 +603,8 @@ export default function QuoteBuilder() {
 
       const nextVersionNumber = (existingVersions?.[0]?.version_number || 0) + 1
 
+      const versionTerm = newVersionType === 'pay_per_use' ? PAY_PER_USE_TERM : newVersionTermMonths
+
       // Create new quote
       const { data: newQuote, error: quoteError } = await supabase
         .from('quotes')
@@ -579,9 +612,9 @@ export default function QuoteBuilder() {
           customer_id: quote.customer_id,
           title: quote.title,
           status: 'draft',
-          quote_type: quote.quote_type || 'commitment',
+          quote_type: newVersionType,
           valid_until: quote.valid_until,
-          use_aggregated_pricing: quote.use_aggregated_pricing,
+          use_aggregated_pricing: newVersionType === 'pay_per_use' ? false : quote.use_aggregated_pricing,
           base_usage_ratio: quote.base_usage_ratio ?? 0.60,
           notes: quote.notes,
           version_group_id: versionGroupId,
@@ -595,14 +628,14 @@ export default function QuoteBuilder() {
 
       if (quoteError) throw quoteError
 
-      // Copy packages
+      // Copy packages, applying the new term
       for (const pkg of quote.quote_packages) {
         const { data: newPkg, error: pkgError } = await supabase
           .from('quote_packages')
           .insert({
             quote_id: newQuote.id,
             package_name: pkg.package_name,
-            term_months: pkg.term_months,
+            term_months: versionTerm,
             status: pkg.status,
             include_in_quote: pkg.include_in_quote,
             notes: pkg.notes,
@@ -631,6 +664,16 @@ export default function QuoteBuilder() {
 
           if (itemsError) throw itemsError
         }
+      }
+
+      // Trigger pricing recalculation for the new version so prices reflect the new term
+      try {
+        await invokeEdgeFunction<CalculatePricingResponse>(
+          'calculate-pricing',
+          { action: 'calculate_quote', quote_id: newQuote.id }
+        )
+      } catch (calcError) {
+        console.warn('Initial pricing for new version failed:', calcError)
       }
 
       // Update original quote's version_group_id if it was null
@@ -818,6 +861,21 @@ export default function QuoteBuilder() {
         .eq('id', id)
 
       if (saveError) throw saveError
+
+      // Sync term_months on all packages to match the selected commitment term.
+      // This ensures that switching quote type (e.g. PPU → commitment) actually
+      // changes the term factor applied by the pricing engine.
+      const targetTerm = formData.quote_type === 'pay_per_use' ? PAY_PER_USE_TERM : selectedTermMonths
+      if (quote?.quote_packages.length) {
+        const pkgsNeedingUpdate = quote.quote_packages.filter(p => p.term_months !== targetTerm)
+        if (pkgsNeedingUpdate.length > 0) {
+          const { error: termError } = await supabase
+            .from('quote_packages')
+            .update({ term_months: targetTerm })
+            .in('id', pkgsNeedingUpdate.map(p => p.id))
+          if (termError) throw termError
+        }
+      }
 
       const response = await invokeEdgeFunction<CalculatePricingResponse>(
         'calculate-pricing',
@@ -1423,7 +1481,7 @@ export default function QuoteBuilder() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              {quote?.quote_packages.map((pkg) => (
+              {[...(quote?.quote_packages ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)).map((pkg) => (
                 <div key={pkg.id} className="rounded-lg border">
                   {/* Package Header */}
                   <div
@@ -1485,7 +1543,7 @@ export default function QuoteBuilder() {
                         </TableHeader>
                         <TableBody>
                           {(() => {
-                            const items = pkg.quote_items || []
+                            const items = [...(pkg.quote_items || [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
                             const rows: React.ReactNode[] = []
 
                             // Reusable item row renderer
@@ -1820,6 +1878,34 @@ export default function QuoteBuilder() {
                 )}
               </div>
 
+              {/* Commitment Term Selector (existing quotes) */}
+              {formData.quote_type === 'commitment' && (
+                <div className="pt-4 border-t space-y-2">
+                  <Label className="flex items-center gap-1.5 text-sm">
+                    <Lock className="h-3.5 w-3.5 text-blue-500" />
+                    Commitment Term
+                  </Label>
+                  <Select
+                    value={selectedTermMonths.toString()}
+                    onValueChange={(v) => setSelectedTermMonths(parseInt(v))}
+                  >
+                    <SelectTrigger className="h-8 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {termOptions.filter(t => t > 1).map((term) => (
+                        <SelectItem key={term} value={term.toString()}>
+                          {term} months ({Math.floor(term / 12)} yr{Math.floor(term / 12) !== 1 ? 's' : ''})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Applied to all packages on next Calculate
+                  </p>
+                </div>
+              )}
+
               {/* Quick Version Action */}
               <div className="pt-4 border-t">
                 <Button
@@ -1904,7 +1990,7 @@ export default function QuoteBuilder() {
           <DialogHeader>
             <DialogTitle>Create New Version</DialogTitle>
             <DialogDescription>
-              Duplicate this quote as a new version with an optional name
+              Duplicate this quote as a new version. Change the type or term to compare pricing scenarios.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -1920,6 +2006,58 @@ export default function QuoteBuilder() {
                 {versionName ? ` - ${versionName}` : ''}"
               </p>
             </div>
+            <div className="space-y-2">
+              <Label>Quote Type</Label>
+              <Select
+                value={newVersionType}
+                onValueChange={(v) => {
+                  const qt = v as QuoteType
+                  setNewVersionType(qt)
+                  if (qt === 'commitment' && newVersionTermMonths <= 1) {
+                    setNewVersionTermMonths(DEFAULT_COMMITMENT_TERM)
+                  }
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="commitment">
+                    <div className="flex items-center gap-2">
+                      <Lock className="h-4 w-4 text-blue-600" />
+                      <span>Commitment</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="pay_per_use">
+                    <div className="flex items-center gap-2">
+                      <Repeat className="h-4 w-4 text-amber-600" />
+                      <span>Pay-per-Use</span>
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {newVersionType === 'commitment' && (
+              <div className="space-y-2">
+                <Label>Commitment Term</Label>
+                <Select
+                  value={newVersionTermMonths.toString()}
+                  onValueChange={(v) => setNewVersionTermMonths(parseInt(v))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {termOptions.filter(t => t > 1).map((term) => (
+                      <SelectItem key={term} value={term.toString()}>
+                        {term} months ({Math.floor(term / 12)} year{Math.floor(term / 12) !== 1 ? 's' : ''})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">{getTermTierLabel(newVersionTermMonths)}</p>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowVersionDialog(false)}>
