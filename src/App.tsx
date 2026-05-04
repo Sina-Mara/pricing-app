@@ -20,6 +20,7 @@ import YearlyForecastPage from '@/pages/YearlyForecastPage'
 import ForecastWizardPage from '@/pages/ForecastWizardPage'
 import Settings from '@/pages/Settings'
 import MvneCalculator from '@/pages/MvneCalculator'
+import ManagedPgwCalculator from '@/pages/ManagedPgwCalculator'
 import Timeline from '@/pages/Timeline'
 
 // Admin Pages
@@ -55,6 +56,7 @@ export default function App() {
           <Route path="/customers" element={<Customers />} />
           <Route path="/calculator" element={<Calculator />} />
           <Route path="/mvne-calculator" element={<MvneCalculator />} />
+          <Route path="/managed-service" element={<ManagedPgwCalculator />} />
           <Route path="/forecast" element={<ForecastEvaluator />} />
           <Route path="/forecast/timeseries" element={<TimeSeriesForecast />} />
           <Route path="/forecast/yearly" element={<YearlyForecastPage />} />

@@ -24,6 +24,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Network,
+  Radio,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -42,6 +43,7 @@ const navigation = [
   { name: 'Customers', href: '/customers', icon: Users },
   { name: 'Calculator', href: '/calculator', icon: Calculator },
   { name: 'MVNE', href: '/mvne-calculator', icon: Network },
+  { name: 'Managed Service', href: '/managed-service', icon: Radio },
   { name: 'Forecast', href: '/forecast/wizard', icon: Wand2 },
 ]
 

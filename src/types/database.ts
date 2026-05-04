@@ -536,6 +536,33 @@ export interface MvneCalculatorConfig {
   updated_at: string
 }
 
+// Managed PGW SaaS Pricing Calculator types (SPEC-014)
+
+export interface ManagedPgwTopologyInputs {
+  num_sites: number
+  vcores_per_site: number
+  nodes_per_cno_site: number
+  cno_db_instances: number
+  tier10_sau_cap: number
+}
+
+export interface ManagedPgwExternalCostItem {
+  id: string
+  name: string
+  fixed_monthly: number
+}
+
+export interface ManagedPgwCalculatorConfig {
+  id: string
+  name: string
+  description: string | null
+  topology_inputs: ManagedPgwTopologyInputs
+  external_costs: ManagedPgwExternalCostItem[]
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
 // Quote with timeseries support
 export interface QuoteWithTimeseries extends Quote {
   source_timeseries_id: string | null
