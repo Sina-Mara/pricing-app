@@ -4,8 +4,10 @@
 // for the Vodafone IoT Managed PGW RFP "SaaS Fees" tab.
 // ============================================================================
 
-import { round2, round4, priceFromModel } from '@/lib/pricing';
+import { round2, round4, priceFromModel, applyBaseUsageRatio, interpolateTermFactor, CAS_REFERENCE_BASE_RATIO } from '@/lib/pricing';
 import type { PricingModel } from '@/lib/pricing';
+
+export { CAS_REFERENCE_BASE_RATIO };
 import type { ManagedPgwTopologyInputs, ManagedPgwExternalCostItem } from '@/types/database';
 
 // ============================================================================
@@ -57,6 +59,25 @@ export const PGW_BASE_SKUS = [
   'CNO_central',
 ] as const;
 
+const SKU_CATEGORIES: Record<string, 'cas' | 'cno' | 'ccs'> = {
+  Cennso_Sites:       'cas',
+  Cennso_vCores:      'cas',
+  Cennso_CoreCluster: 'cas',
+  SMC_sessions:       'cas',
+  UPG_Bandwidth:      'cas',
+  Cennso_base:        'cas',
+  SMC_base:           'cas',
+  UPG_base:           'cas',
+  CCS_base:           'ccs',
+  CNO_Sites:          'cno',
+  CNO_Nodes:          'cno',
+  CNO_DB:             'cno',
+  CNO_base:           'cno',
+  CNO_24_7:           'cno',
+  CNO_central:        'cno',
+};
+
+
 const SKU_LABELS: Record<string, string> = {
   Cennso_Sites:      'Cennso Sites',
   Cennso_vCores:     'Cennso vCores',
@@ -82,7 +103,7 @@ const SKU_LABELS: Record<string, string> = {
 export interface TierCostBreakdown {
   skuCode: string;
   label: string;
-  type: 'topology' | 'tier_variable' | 'base' | 'external';
+  type: 'topology' | 'tier_variable' | 'base' | 'external' | 'per_gb';
   quantity?: number;
   unitPrice?: number;
   cost: number;
@@ -136,9 +157,24 @@ export function migrateTopologyInputs(raw: Record<string, unknown>): ManagedPgwT
       nodes_per_cno_site:(raw.nodes_per_cno_site as number) ?? 3,
       cno_db_instances:  (raw.cno_db_instances  as number) ?? 3,
       tier10_sau_cap:    (raw.tier10_sau_cap     as number) ?? 7_500_000,
+      cas_ratio:            (raw.cas_ratio            as number) ?? CAS_REFERENCE_BASE_RATIO,
+      commitment_months:    (raw.commitment_months    as number) ?? 12,
+      gb_per_sau_per_month: (raw.gb_per_sau_per_month as number) ?? 0,
+      rp_value:             (raw.rp_value             as number) ?? 0,
     };
   }
-  return raw as unknown as ManagedPgwTopologyInputs;
+  const r = raw as Record<string, unknown>;
+  return {
+    num_sites:            (r.num_sites            as number) ?? 8,
+    vcores_per_site:      (r.vcores_per_site      as number) ?? 18,
+    nodes_per_cno_site:   (r.nodes_per_cno_site   as number) ?? 3,
+    cno_db_instances:     (r.cno_db_instances     as number) ?? 3,
+    tier10_sau_cap:       (r.tier10_sau_cap        as number) ?? 7_500_000,
+    cas_ratio:            (r.cas_ratio             as number) ?? CAS_REFERENCE_BASE_RATIO,
+    commitment_months:    (r.commitment_months     as number) ?? 12,
+    gb_per_sau_per_month: (r.gb_per_sau_per_month  as number) ?? 0,
+    rp_value:             (r.rp_value              as number) ?? 0,
+  };
 }
 
 // ============================================================================
@@ -154,16 +190,34 @@ export function migrateTopologyInputs(raw: Record<string, unknown>): ManagedPgwT
  *   3. totalMonthlyCost / maxSau = Y1 unit price
  *   4. Apply 6% compound annual erosion for Y2–Y5
  */
+const CCS_MAINTENANCE_RATE = 0.10 / 12; // 10% p.a. → monthly
+
 export function calculateManagedPgwTiers(
   topologyInputs: ManagedPgwTopologyInputs,
   skuPricingModels: Record<string, PricingModel>,
   baseCharges: Record<string, number>,
   externalCosts: ManagedPgwExternalCostItem[],
+  termFactors: Record<string, Map<number, number>> = {},
 ): ManagedPgwResult {
   const topologyQuantities = computeTopologyQuantities(topologyInputs);
-  const totalExternalFixed = round2(
-    externalCosts.reduce((sum, item) => sum + (item.fixed_monthly ?? 0), 0)
-  );
+
+  const casRatio        = topologyInputs.cas_ratio ?? CAS_REFERENCE_BASE_RATIO;
+  const commitmentMonths = topologyInputs.commitment_months ?? 12;
+  const gbPerSauPerMonth = topologyInputs.gb_per_sau_per_month ?? 0;
+  const rpValue          = topologyInputs.rp_value ?? 0;
+
+  // CCS base: RP value × 10% p.a. / 12, overrides catalog value
+  const ccsBaseCost = round2(rpValue * CCS_MAINTENANCE_RATE);
+
+  // External: separate fixed and per-GB components
+  const totalExternalFixed = round2(externalCosts.reduce((s, i) => s + (i.fixed_monthly ?? 0), 0));
+  const totalExternalPerGb = round4(externalCosts.reduce((s, i) => s + (i.per_gb ?? 0), 0));
+
+  const getTermFactor = (skuCode: string): number => {
+    const cat = SKU_CATEGORIES[skuCode];
+    const map = cat ? termFactors[cat] : undefined;
+    return map ? interpolateTermFactor(map, commitmentMonths, cat!) : 1;
+  };
 
   const tiers: TierRow[] = MANAGED_PGW_TIERS.map((tierDef) => {
     const maxSau = tierDef.maxSau ?? topologyInputs.tier10_sau_cap;
@@ -176,7 +230,9 @@ export function calculateManagedPgwTiers(
     for (const skuCode of PGW_TOPOLOGY_SKUS) {
       const qty = topologyQuantities[skuCode] ?? 0;
       const model = skuPricingModels[skuCode];
-      const unitPrice = model && qty > 0 ? priceFromModel(model, qty) : (model?.base_unit_price ?? 0);
+      const rawPrice = model && qty > 0 ? priceFromModel(model, qty) : (model?.base_unit_price ?? 0);
+      const { adjustedPrice: ratioPrice } = applyBaseUsageRatio(rawPrice, false, SKU_CATEGORIES[skuCode] ?? 'default', casRatio);
+      const unitPrice = round4(ratioPrice * getTermFactor(skuCode));
       const cost = round2(qty * unitPrice);
       totalUsageCost += cost;
       breakdown.push({ skuCode, label: SKU_LABELS[skuCode] ?? skuCode, type: 'topology', quantity: qty, unitPrice, cost });
@@ -190,7 +246,9 @@ export function calculateManagedPgwTiers(
     for (const skuCode of PGW_TIER_SKUS) {
       const qty = tierVariableQtys[skuCode] ?? 0;
       const model = skuPricingModels[skuCode];
-      const unitPrice = model && qty > 0 ? priceFromModel(model, qty) : (model?.base_unit_price ?? 0);
+      const rawPrice = model && qty > 0 ? priceFromModel(model, qty) : (model?.base_unit_price ?? 0);
+      const { adjustedPrice: ratioPrice } = applyBaseUsageRatio(rawPrice, false, SKU_CATEGORIES[skuCode] ?? 'default', casRatio);
+      const unitPrice = round4(ratioPrice * getTermFactor(skuCode));
       const cost = round2(qty * unitPrice);
       totalUsageCost += cost;
       breakdown.push({ skuCode, label: SKU_LABELS[skuCode] ?? skuCode, type: 'tier_variable', quantity: qty, unitPrice, cost });
@@ -199,14 +257,17 @@ export function calculateManagedPgwTiers(
     // Base charges
     let totalBaseCharges = 0;
     for (const skuCode of PGW_BASE_SKUS) {
-      const cost = round2(baseCharges[skuCode] ?? 0);
+      // CCS_base is driven by RP value, not the catalog
+      const rawCost = skuCode === 'CCS_base' ? ccsBaseCost : (baseCharges[skuCode] ?? 0);
+      const { adjustedPrice: ratioAdjusted } = applyBaseUsageRatio(rawCost, true, SKU_CATEGORIES[skuCode] ?? 'default', casRatio);
+      const cost = round2(ratioAdjusted * getTermFactor(skuCode));
       totalBaseCharges += cost;
       if (cost > 0) {
         breakdown.push({ skuCode, label: SKU_LABELS[skuCode] ?? skuCode, type: 'base', cost });
       }
     }
 
-    // External infra costs
+    // External infra — fixed portion
     for (const item of externalCosts) {
       const cost = round2(item.fixed_monthly ?? 0);
       if (cost > 0) {
@@ -214,7 +275,21 @@ export function calculateManagedPgwTiers(
       }
     }
 
-    const totalMonthlyCost = round2(totalUsageCost + totalBaseCharges + totalExternalFixed);
+    // Per-GB costs blended into per-SAU
+    const estimatedGb = round4(maxSau * gbPerSauPerMonth);
+    const perGbCost   = round2(estimatedGb * totalExternalPerGb);
+    if (perGbCost > 0) {
+      breakdown.push({
+        skuCode: 'PER_GB',
+        label: `Per-GB costs (${gbPerSauPerMonth} GB/SAU/mo × ${maxSau.toLocaleString()} SAU)`,
+        type: 'per_gb',
+        quantity: estimatedGb,
+        unitPrice: totalExternalPerGb,
+        cost: perGbCost,
+      });
+    }
+
+    const totalMonthlyCost = round2(totalUsageCost + totalBaseCharges + totalExternalFixed + perGbCost);
     const unitPriceY1 = maxSau > 0 ? round4(totalMonthlyCost / maxSau) : 0;
 
     const unitPrices = Array.from({ length: CONTRACT_YEARS }, (_, i) =>
@@ -249,12 +324,16 @@ export function createDefaultTopologyInputs(): ManagedPgwTopologyInputs {
     nodes_per_cno_site: 3,
     cno_db_instances: 3,
     tier10_sau_cap: 7_500_000,
+    cas_ratio: CAS_REFERENCE_BASE_RATIO,
+    commitment_months: 12,
+    gb_per_sau_per_month: 0,
+    rp_value: 0,
   };
 }
 
 export function createDefaultExternalCosts(): ManagedPgwExternalCostItem[] {
   return [
-    { id: 'ext_1', name: 'Infrastructure (VMs, IPs, Storage)', fixed_monthly: 0 },
-    { id: 'ext_2', name: 'Connectivity / Transit', fixed_monthly: 0 },
+    { id: 'ext_1', name: 'Infrastructure (VMs, IPs, Storage)', fixed_monthly: 0, per_gb: 0 },
+    { id: 'ext_2', name: 'Connectivity / Transit', fixed_monthly: 0, per_gb: 0 },
   ];
 }

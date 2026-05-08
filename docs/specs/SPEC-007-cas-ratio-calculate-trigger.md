@@ -1,6 +1,7 @@
 # SPEC-007: CAS Ratio Slider — Calculate Trigger
 
-**Status:** decomposed
+**Status:** ready
+
 **Created:** 2026-02-26
 
 ## Problem
@@ -23,10 +24,10 @@ After making the CAS ratio slider sticky (SPEC-006), two gaps remain: the Calcul
 
 ## Acceptance
 
-- [x] Calculate button visible in sticky bar while SKUs are in view
-- [x] Clicking Calculate saves ratio + triggers edge function recalculation
-- [x] With Auto-calculate on: dragging ratio slider recalculates after ~1.5s
-- [x] With Auto-calculate off: no recalculation until Calculate is clicked
+- [ ] Calculate button visible in sticky bar while SKUs are in view
+- [ ] Clicking Calculate saves ratio + triggers edge function recalculation
+- [ ] With Auto-calculate on: dragging ratio slider recalculates after ~1.5s
+- [ ] With Auto-calculate off: no recalculation until Calculate is clicked
 
 ## Phases
 

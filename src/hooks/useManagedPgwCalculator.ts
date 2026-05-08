@@ -155,14 +155,19 @@ export function useManagedPgwSkuData() {
       const skuIds = skus.map((s) => s.id)
       const skuCodeById = Object.fromEntries(skus.map((s) => [s.id, s.code]))
 
-      const [{ data: models, error: modelError }, { data: bases, error: baseError }] =
-        await Promise.all([
-          supabase.from('pricing_models').select('*').in('sku_id', skuIds).eq('is_active', true),
-          supabase.from('base_charges').select('*').in('sku_id', skuIds),
-        ])
+      const [
+        { data: models, error: modelError },
+        { data: bases, error: baseError },
+        { data: tfRows, error: tfError },
+      ] = await Promise.all([
+        supabase.from('pricing_models').select('*').in('sku_id', skuIds).eq('is_active', true),
+        supabase.from('base_charges').select('*').in('sku_id', skuIds),
+        supabase.from('term_factors').select('category, term_months, factor'),
+      ])
 
       if (modelError) throw modelError
       if (baseError) throw baseError
+      if (tfError) throw tfError
 
       const skuPricingModels: Record<string, PricingModel> = {}
       for (const m of models ?? []) {
@@ -176,13 +181,20 @@ export function useManagedPgwSkuData() {
         if (code) baseCharges[code] = b.base_mrc
       }
 
-      return { skuPricingModels, baseCharges }
+      const termFactors: Record<string, Map<number, number>> = {}
+      for (const row of tfRows ?? []) {
+        if (!termFactors[row.category]) termFactors[row.category] = new Map()
+        termFactors[row.category].set(row.term_months, row.factor)
+      }
+
+      return { skuPricingModels, baseCharges, termFactors }
     },
   })
 
   return {
     skuPricingModels: data?.skuPricingModels ?? {},
     baseCharges: data?.baseCharges ?? {},
+    termFactors: data?.termFactors ?? {},
     loading,
     error,
   }

@@ -544,12 +544,17 @@ export interface ManagedPgwTopologyInputs {
   nodes_per_cno_site: number
   cno_db_instances: number
   tier10_sau_cap: number
+  cas_ratio: number
+  commitment_months: number
+  gb_per_sau_per_month: number
+  rp_value: number
 }
 
 export interface ManagedPgwExternalCostItem {
   id: string
   name: string
   fixed_monthly: number
+  per_gb?: number
 }
 
 export interface ManagedPgwCalculatorConfig {

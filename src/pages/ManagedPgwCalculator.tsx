@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
 import { Save, FolderOpen, Trash2, Plus, ChevronDown, ChevronRight, Download, Copy } from 'lucide-react'
+import { CAS_REFERENCE_BASE_RATIO } from '@/lib/managed-pgw-calculator'
 import type { ManagedPgwTopologyInputs, ManagedPgwExternalCostItem } from '@/types/database'
 import {
   calculateManagedPgwTiers,
@@ -70,12 +71,16 @@ function TopologyInputs({ inputs, onChange }: TopologyInputsProps) {
   )
 
   const fields: { key: keyof ManagedPgwTopologyInputs; label: string; help?: string }[] = [
-    { key: 'num_sites',         label: 'Sites' },
-    { key: 'vcores_per_site',   label: 'vCores / Site' },
-    { key: 'nodes_per_cno_site',label: 'CNO Nodes / Site' },
-    { key: 'cno_db_instances',  label: 'CNO DB Instances' },
-    { key: 'tier10_sau_cap',    label: 'Tier 10 SAU Cap', help: 'Max SAU for the 5M+ tier' },
+    { key: 'num_sites',            label: 'Sites' },
+    { key: 'vcores_per_site',      label: 'vCores / Site' },
+    { key: 'nodes_per_cno_site',   label: 'CNO Nodes / Site' },
+    { key: 'cno_db_instances',     label: 'CNO DB Instances' },
+    { key: 'tier10_sau_cap',       label: 'Tier 10 SAU Cap', help: 'Max SAU for the 5M+ tier' },
+    { key: 'rp_value',             label: 'RP Value (€)', help: 'Realisierungsprojekt total — CCS maintenance = 10% p.a.' },
+    { key: 'gb_per_sau_per_month', label: 'GB / SAU / month', help: 'Expected data volume per connection; blended into per-SAU price' },
   ]
+
+  const casRatioPct = Math.round((inputs.cas_ratio ?? CAS_REFERENCE_BASE_RATIO) * 100)
 
   return (
     <div className="space-y-3">
@@ -92,6 +97,48 @@ function TopologyInputs({ inputs, onChange }: TopologyInputsProps) {
           />
         </div>
       ))}
+
+      <Separator />
+
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <Label className="text-xs text-muted-foreground">CAS Base / Usage Ratio</Label>
+          <span className="text-xs font-mono text-muted-foreground">{casRatioPct}% / {100 - casRatioPct}%</span>
+        </div>
+        <input
+          type="range"
+          min={10}
+          max={90}
+          step={5}
+          value={casRatioPct}
+          onChange={(e) => onChange({ ...inputs, cas_ratio: parseInt(e.target.value) / 100 })}
+          className="w-full h-2 accent-primary cursor-pointer"
+        />
+        <div className="flex justify-between text-xs text-muted-foreground/60 mt-0.5">
+          <span>10% base</span>
+          <span className="text-muted-foreground/40">ref: 60%</span>
+          <span>90% base</span>
+        </div>
+      </div>
+
+      <div>
+        <Label className="text-xs text-muted-foreground">Commitment Length</Label>
+        <div className="flex gap-1 mt-1">
+          {([1, 12, 24, 36, 48] as const).map((mo) => (
+            <button
+              key={mo}
+              onClick={() => onChange({ ...inputs, commitment_months: mo })}
+              className={`flex-1 h-8 rounded text-xs font-medium border transition-colors ${
+                inputs.commitment_months === mo
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'bg-background border-input text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              {mo === 1 ? 'Mo' : `${mo / 12}yr`}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
@@ -109,35 +156,44 @@ let _nextId = 100
 function nextExtId(): string { return `ext_${_nextId++}` }
 
 function ExternalCosts({ costs, onChange }: ExternalCostsProps) {
-  const updateItem = (id: string, field: 'name' | 'fixed_monthly', value: string) => {
+  const updateItem = (id: string, field: 'name' | 'fixed_monthly' | 'per_gb', value: string) => {
     onChange(costs.map((c) =>
       c.id === id
-        ? { ...c, [field]: field === 'fixed_monthly' ? (parseFloat(value) || 0) : value }
+        ? { ...c, [field]: field === 'name' ? value : (parseFloat(value) || 0) }
         : c
     ))
   }
-  const addItem = () => onChange([...costs, { id: nextExtId(), name: '', fixed_monthly: 0 }])
+  const addItem = () => onChange([...costs, { id: nextExtId(), name: '', fixed_monthly: 0, per_gb: 0 }])
   const removeItem = (id: string) => onChange(costs.filter((c) => c.id !== id))
 
   return (
     <div className="space-y-2">
+      <div className="grid grid-cols-[1fr_5rem_4.5rem_1.75rem] gap-1 text-xs text-muted-foreground/60 px-0.5">
+        <span>Description</span><span className="text-right">€/mo</span><span className="text-right">€/GB</span><span/>
+      </div>
       {costs.map((item) => (
-        <div key={item.id} className="flex gap-2 items-center">
+        <div key={item.id} className="grid grid-cols-[1fr_5rem_4.5rem_1.75rem] gap-1 items-center">
           <Input
-            className="h-7 text-xs flex-1"
+            className="h-7 text-xs"
             placeholder="Description"
             value={item.name}
             onChange={(e) => updateItem(item.id, 'name', e.target.value)}
           />
           <Input
-            type="number"
-            min={0}
-            className="h-7 text-xs w-28"
-            placeholder="€/mo"
+            type="number" min={0}
+            className="h-7 text-xs"
+            placeholder="0.00"
             value={item.fixed_monthly || ''}
             onChange={(e) => updateItem(item.id, 'fixed_monthly', e.target.value)}
           />
-          <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={() => removeItem(item.id)}>
+          <Input
+            type="number" min={0} step={0.001}
+            className="h-7 text-xs"
+            placeholder="0.000"
+            value={item.per_gb || ''}
+            onChange={(e) => updateItem(item.id, 'per_gb', e.target.value)}
+          />
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => removeItem(item.id)}>
             <Trash2 className="h-3 w-3 text-destructive" />
           </Button>
         </div>
@@ -293,13 +349,13 @@ export default function ManagedPgwCalculator() {
   const [expandedTier, setExpandedTier] = useState<number | null>(null)
   const [showSaveLoad, setShowSaveLoad] = useState(false)
   const [exampleSau, setExampleSau] = useState<string>('')
-  const { skuPricingModels, baseCharges, loading: skuLoading } = useManagedPgwSkuData()
+  const { skuPricingModels, baseCharges, termFactors, loading: skuLoading } = useManagedPgwSkuData()
   const { toast } = useToast()
 
   const result = useMemo(() => {
     if (skuLoading) return null
-    return calculateManagedPgwTiers(topology, skuPricingModels, baseCharges, externalCosts)
-  }, [topology, externalCosts, skuPricingModels, baseCharges, skuLoading])
+    return calculateManagedPgwTiers(topology, skuPricingModels, baseCharges, externalCosts, termFactors)
+  }, [topology, externalCosts, skuPricingModels, baseCharges, termFactors, skuLoading])
 
   const matchedTier = useMemo(() => {
     const sau = parseFloat(exampleSau.replace(/[^0-9.]/g, ''))
