@@ -568,6 +568,17 @@ export interface ManagedPgwCalculatorConfig {
   updated_at: string
 }
 
+// CNS Cost Sharing Pool (SPEC-017)
+export interface CnsPoolRow {
+  id: string
+  name: string
+  nodes: number
+  share_pct_override: number | null  // explicit %, null = auto from nodes
+  is_this_customer: boolean
+  created_at: string
+  updated_at: string
+}
+
 // Quote with timeseries support
 export interface QuoteWithTimeseries extends Quote {
   source_timeseries_id: string | null

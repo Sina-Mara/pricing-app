@@ -30,6 +30,7 @@ import EnvironmentFactors from '@/pages/admin/EnvironmentFactors'
 import BaseCharges from '@/pages/admin/BaseCharges'
 import PerpetualConfig from '@/pages/admin/PerpetualConfig'
 import ForecastMapping from '@/pages/admin/ForecastMapping'
+import CnsPoolPage from '@/pages/admin/CnsPoolPage'
 
 export default function App() {
   return (
@@ -70,6 +71,7 @@ export default function App() {
           <Route path="/admin/base-charges" element={<BaseCharges />} />
           <Route path="/admin/perpetual-config" element={<PerpetualConfig />} />
           <Route path="/admin/forecast-mapping" element={<ForecastMapping />} />
+          <Route path="/admin/cns-pool" element={<CnsPoolPage />} />
 
           {/* Quote Comparison */}
           <Route path="/quotes/compare" element={<QuoteCompare />} />

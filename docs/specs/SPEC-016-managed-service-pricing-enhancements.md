@@ -1,6 +1,6 @@
 # SPEC-016: Managed Service Calculator — Pricing Enhancements
 
-**Status:** ready
+**Status:** decomposed
 **Created:** 2026-05-04
 
 ## Problem

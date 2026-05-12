@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
+import { Link } from 'react-router-dom'
 import { Save, FolderOpen, Trash2, Plus, ChevronDown, ChevronRight, Download, Copy } from 'lucide-react'
 import { CAS_REFERENCE_BASE_RATIO } from '@/lib/managed-pgw-calculator'
 import type { ManagedPgwTopologyInputs, ManagedPgwExternalCostItem } from '@/types/database'
@@ -36,6 +37,7 @@ import {
   useManagedPgwSaveConfig,
   useManagedPgwDeleteConfig,
   useManagedPgwSkuData,
+  useCnsPoolShare,
 } from '@/hooks/useManagedPgwCalculator'
 
 // ============================================================================
@@ -226,7 +228,17 @@ function TierBreakdownRow({ tierRow }: { tierRow: ReturnType<typeof calculateMan
               <span className="text-right text-muted-foreground">
                 {item.quantity != null ? item.quantity.toLocaleString() : '—'}
               </span>
-              <span className="text-right">€{item.cost.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+              {item.isShared && item.fullCost != null && item.sharePct != null ? (
+                <span className="text-right text-muted-foreground">
+                  €{item.fullCost.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                  {' × '}
+                  {(item.sharePct * 100).toFixed(2)}%
+                  {' = '}
+                  <span className="text-foreground">€{item.cost.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                </span>
+              ) : (
+                <span className="text-right">€{item.cost.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+              )}
             </React.Fragment>
           )
         ))}
@@ -350,12 +362,13 @@ export default function ManagedPgwCalculator() {
   const [showSaveLoad, setShowSaveLoad] = useState(false)
   const [exampleSau, setExampleSau] = useState<string>('')
   const { skuPricingModels, baseCharges, termFactors, loading: skuLoading } = useManagedPgwSkuData()
+  const { sharePct, thisCustomer } = useCnsPoolShare()
   const { toast } = useToast()
 
   const result = useMemo(() => {
     if (skuLoading) return null
-    return calculateManagedPgwTiers(topology, skuPricingModels, baseCharges, externalCosts, termFactors)
-  }, [topology, externalCosts, skuPricingModels, baseCharges, termFactors, skuLoading])
+    return calculateManagedPgwTiers(topology, skuPricingModels, baseCharges, externalCosts, termFactors, sharePct)
+  }, [topology, externalCosts, skuPricingModels, baseCharges, termFactors, skuLoading, sharePct])
 
   const matchedTier = useMemo(() => {
     const sau = parseFloat(exampleSau.replace(/[^0-9.]/g, ''))
@@ -416,7 +429,17 @@ export default function ManagedPgwCalculator() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Managed Service Calculator</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold">Managed Service Calculator</h1>
+            {thisCustomer && (
+              <Link
+                to="/admin/cns-pool"
+                className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold text-muted-foreground hover:text-foreground hover:border-foreground transition-colors"
+              >
+                Your share: {(sharePct * 100).toFixed(2)}% ({thisCustomer.name})
+              </Link>
+            )}
+          </div>
           <p className="text-sm text-muted-foreground mt-1">
             Per-SAU/month price schedule across 10 tiers with annual price erosion
           </p>

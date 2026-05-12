@@ -25,6 +25,7 @@ import {
   PanelLeftOpen,
   Network,
   Radio,
+  Share2,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -60,6 +61,7 @@ const adminNavigation = [
   { name: 'Base Charges', href: '/admin/base-charges', icon: DollarSign },
   { name: 'Perpetual Config', href: '/admin/perpetual-config', icon: FileStack },
   { name: 'Forecast Mapping', href: '/admin/forecast-mapping', icon: Map },
+  { name: 'CNS Pool', href: '/admin/cns-pool', icon: Share2 },
 ]
 
 const bottomNavigation = [

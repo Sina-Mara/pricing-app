@@ -59,6 +59,9 @@ export const PGW_BASE_SKUS = [
   'CNO_central',
 ] as const;
 
+/** SKUs whose cost is shared across CNS customers and must be allocated by share %. */
+const SHARED_SKUS = new Set(['Cennso_base', 'CNO_base', 'CNO_24_7']);
+
 const SKU_CATEGORIES: Record<string, 'cas' | 'cno' | 'ccs'> = {
   Cennso_Sites:       'cas',
   Cennso_vCores:      'cas',
@@ -107,6 +110,11 @@ export interface TierCostBreakdown {
   quantity?: number;
   unitPrice?: number;
   cost: number;
+  /** Only set for shared SKUs — cost before the customer share % is applied */
+  fullCost?: number;
+  /** Only set for shared SKUs — fraction applied (0–1) */
+  sharePct?: number;
+  isShared?: boolean;
 }
 
 export interface TierRow {
@@ -198,6 +206,7 @@ export function calculateManagedPgwTiers(
   baseCharges: Record<string, number>,
   externalCosts: ManagedPgwExternalCostItem[],
   termFactors: Record<string, Map<number, number>> = {},
+  customerSharePct: number = 1,
 ): ManagedPgwResult {
   const topologyQuantities = computeTopologyQuantities(topologyInputs);
 
@@ -260,10 +269,18 @@ export function calculateManagedPgwTiers(
       // CCS_base is driven by RP value, not the catalog
       const rawCost = skuCode === 'CCS_base' ? ccsBaseCost : (baseCharges[skuCode] ?? 0);
       const { adjustedPrice: ratioAdjusted } = applyBaseUsageRatio(rawCost, true, SKU_CATEGORIES[skuCode] ?? 'default', casRatio);
-      const cost = round2(ratioAdjusted * getTermFactor(skuCode));
+      const fullCost = round2(ratioAdjusted * getTermFactor(skuCode));
+      const isShared = SHARED_SKUS.has(skuCode);
+      const cost = isShared ? round2(fullCost * customerSharePct) : fullCost;
       totalBaseCharges += cost;
-      if (cost > 0) {
-        breakdown.push({ skuCode, label: SKU_LABELS[skuCode] ?? skuCode, type: 'base', cost });
+      if (fullCost > 0) {
+        breakdown.push({
+          skuCode,
+          label: SKU_LABELS[skuCode] ?? skuCode,
+          type: 'base',
+          cost,
+          ...(isShared ? { isShared: true, fullCost, sharePct: customerSharePct } : {}),
+        });
       }
     }
 

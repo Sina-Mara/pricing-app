@@ -6,6 +6,7 @@ import type {
   ManagedPgwCalculatorConfig,
   ManagedPgwTopologyInputs,
   ManagedPgwExternalCostItem,
+  CnsPoolRow,
 } from '@/types/database'
 
 const PGW_CONFIGS_KEY = ['managed-pgw-configs'] as const
@@ -127,6 +128,37 @@ export function useManagedPgwDeleteConfig() {
   })
 
   return { deleteConfig: mutation.mutateAsync, deleting: mutation.isPending, error: error ?? mutation.error }
+}
+
+// ---------------------------------------------------------------------------
+// useCnsPoolShare — fetch the "this customer" share fraction (0–1) from cns_pool
+// ---------------------------------------------------------------------------
+
+export function useCnsPoolShare() {
+  const { data, isLoading: loading, error } = useQuery({
+    queryKey: ['cns-pool'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('cns_pool')
+        .select('*')
+        .order('name')
+      if (error) throw error
+      return data as CnsPoolRow[]
+    },
+  })
+
+  const rows = data ?? []
+  const totalNodes = rows.reduce((s, r) => s + r.nodes, 0)
+  const thisCustomer = rows.find((r) => r.is_this_customer)
+
+  let sharePct = 1
+  if (thisCustomer) {
+    sharePct = thisCustomer.share_pct_override !== null
+      ? thisCustomer.share_pct_override / 100
+      : totalNodes > 0 ? thisCustomer.nodes / totalNodes : 1
+  }
+
+  return { sharePct, thisCustomer: thisCustomer ?? null, rows, loading, error }
 }
 
 // ---------------------------------------------------------------------------
