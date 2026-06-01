@@ -495,46 +495,6 @@ export interface TimeseriesPricingComparison {
   savingsPercent: number
 }
 
-// MVNE Calculator types
-export interface MvneCapacityInputs {
-  num_mvnos: number
-  subs_per_mvno: number
-  parallel_take_rate: number
-  aggregate_throughput_mbps: number
-  num_local_breakouts: number
-  breakout_capacity_mbps: number
-  num_grx_sites: number
-  apns_per_mvno: number
-  vcores_per_breakout: number
-  vcores_per_pgw: number
-  take_rate_pcs_udr: number
-  take_rate_ccs_udr: number
-  nodes_per_cno_site: number
-  gb_per_sub_per_month: number
-}
-
-export interface MvneExternalCostItem {
-  id: string
-  name: string
-  fixed_monthly: number
-  per_gb: number
-}
-
-export type MvneExternalCosts = MvneExternalCostItem[]
-
-export interface MvneCalculatorConfig {
-  id: string
-  name: string
-  description: string | null
-  capacity_inputs: MvneCapacityInputs
-  sku_quantities: Record<string, number>
-  sku_discounts: Record<string, number>
-  sku_overrides: Record<string, boolean>
-  external_costs: MvneExternalCosts
-  created_by: string | null
-  created_at: string
-  updated_at: string
-}
 
 // Managed PGW SaaS Pricing Calculator types (SPEC-014)
 

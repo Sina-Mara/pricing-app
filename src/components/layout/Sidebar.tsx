@@ -23,7 +23,6 @@ import {
   Wand2,
   PanelLeftClose,
   PanelLeftOpen,
-  Network,
   Radio,
   Share2,
 } from 'lucide-react'
@@ -43,7 +42,6 @@ const navigation = [
   { name: 'SKUs', href: '/skus', icon: Package },
   { name: 'Customers', href: '/customers', icon: Users },
   { name: 'Calculator', href: '/calculator', icon: Calculator },
-  { name: 'MVNE', href: '/mvne-calculator', icon: Network },
   { name: 'Managed Service', href: '/managed-service', icon: Radio },
   { name: 'Forecast', href: '/forecast/wizard', icon: Wand2 },
 ]
