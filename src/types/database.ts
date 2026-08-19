@@ -6,6 +6,7 @@ export type EnvironmentType = 'production' | 'reference'
 export type QuoteStatus = 'draft' | 'pending' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'ordered'
 export type PackageStatus = 'new' | 'ordered' | 'existing' | 'cancelled'
 export type QuoteType = 'commitment' | 'pay_per_use'
+export type DiscountType = 'percent' | 'fixed'
 
 export interface Sku {
   id: string
@@ -102,6 +103,14 @@ export interface Quote {
   base_usage_ratio: number
   total_monthly: number
   total_annual: number
+  payment_upfront_months: number          // months paid upfront; 1 = monthly (default)
+  payment_discount_override: number | null // manual override %; null = use table lookup
+  payment_discount_pct: number | null      // effective % after last calculation
+  payment_discount_amount: number | null   // absolute discount on contract total
+  customer_discount_type: DiscountType | null
+  customer_discount_value: number | null   // percentage points if type=percent, else flat EUR
+  customer_discount_note: string | null
+  customer_discount_amount: number | null  // computed EUR amount subtracted from contract total
   created_by: string | null
   created_at: string
   updated_at: string
@@ -148,6 +157,9 @@ export interface QuoteItem {
   aggregated_qty: number | null
   pricing_phases: object | null
   ratio_factor: number | null
+  customer_discount_type: DiscountType | null
+  customer_discount_value: number | null   // percentage points if type=percent, else flat EUR per unit
+  customer_discount_note: string | null
   sort_order: number
   created_at: string
   updated_at: string
@@ -209,6 +221,11 @@ export interface CalculatePricingResponse {
   success: boolean
   total_monthly?: number
   total_annual?: number
+  contract_total?: number
+  payment_discount_pct?: number
+  payment_discount_amount?: number
+  customer_discount_amount?: number
+  contract_total_discounted?: number
   items?: PricingResult[]
   error?: string
 }
@@ -535,6 +552,15 @@ export interface CnsPoolRow {
   nodes: number
   share_pct_override: number | null  // explicit %, null = auto from nodes
   is_this_customer: boolean
+  created_at: string
+  updated_at: string
+}
+
+// Payment Cadence Discounts (SPEC-018)
+export interface PaymentCadenceFactor {
+  id: string
+  upfront_months: number   // months paid upfront; 1 = monthly (0% discount)
+  discount_pct: number     // applied to contract total, e.g. 6 = 6% off
   created_at: string
   updated_at: string
 }

@@ -10,6 +10,7 @@ import Signup from '@/pages/Signup'
 import Dashboard from '@/pages/Dashboard'
 import Quotes from '@/pages/Quotes'
 import QuoteBuilder from '@/pages/QuoteBuilder'
+import QuotePresent from '@/pages/QuotePresent'
 import QuoteCompare from '@/pages/QuoteCompare'
 import SKUs from '@/pages/SKUs'
 import Customers from '@/pages/Customers'
@@ -30,6 +31,7 @@ import BaseCharges from '@/pages/admin/BaseCharges'
 import PerpetualConfig from '@/pages/admin/PerpetualConfig'
 import ForecastMapping from '@/pages/admin/ForecastMapping'
 import CnsPoolPage from '@/pages/admin/CnsPoolPage'
+import PaymentCadenceFactors from '@/pages/admin/PaymentCadenceFactors'
 
 export default function App() {
   return (
@@ -51,6 +53,7 @@ export default function App() {
           <Route path="/quotes" element={<Quotes />} />
           <Route path="/quotes/new" element={<QuoteBuilder />} />
           <Route path="/quotes/:id" element={<QuoteBuilder />} />
+          <Route path="/quotes/:id/present" element={<QuotePresent />} />
           <Route path="/quotes/:id/timeline" element={<Timeline />} />
           <Route path="/skus" element={<SKUs />} />
           <Route path="/customers" element={<Customers />} />
@@ -70,6 +73,7 @@ export default function App() {
           <Route path="/admin/perpetual-config" element={<PerpetualConfig />} />
           <Route path="/admin/forecast-mapping" element={<ForecastMapping />} />
           <Route path="/admin/cns-pool" element={<CnsPoolPage />} />
+          <Route path="/admin/payment-cadence" element={<PaymentCadenceFactors />} />
 
           {/* Quote Comparison */}
           <Route path="/quotes/compare" element={<QuoteCompare />} />

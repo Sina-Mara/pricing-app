@@ -25,6 +25,7 @@ import {
   PanelLeftOpen,
   Radio,
   Share2,
+  CreditCard,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -60,6 +61,7 @@ const adminNavigation = [
   { name: 'Perpetual Config', href: '/admin/perpetual-config', icon: FileStack },
   { name: 'Forecast Mapping', href: '/admin/forecast-mapping', icon: Map },
   { name: 'CNS Pool', href: '/admin/cns-pool', icon: Share2 },
+  { name: 'Payment Cadence', href: '/admin/payment-cadence', icon: CreditCard },
 ]
 
 const bottomNavigation = [

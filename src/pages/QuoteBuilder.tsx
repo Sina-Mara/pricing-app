@@ -39,6 +39,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useToast } from '@/hooks/use-toast'
 import {
   Plus,
@@ -55,6 +56,8 @@ import {
   MoreHorizontal,
   Repeat,
   Lock,
+  Presentation,
+  Percent,
 } from 'lucide-react'
 import { formatCurrency, formatPercent, getStatusColor } from '@/lib/utils'
 import type {
@@ -69,6 +72,8 @@ import type {
   ForecastSkuMapping,
   ForecastKpiType,
   ForecastScenario,
+  PaymentCadenceFactor,
+  DiscountType,
 } from '@/types/database'
 import { generateQuotePDF } from '@/lib/pdf'
 import { QuickQuantityInput } from '@/components/QuickQuantityInput'
@@ -276,6 +281,18 @@ export default function QuoteBuilder() {
     enabled: !!quote?.version_group_id,
   })
 
+  const { data: cadenceFactors = [] } = useQuery({
+    queryKey: ['payment-cadence-factors'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('payment_cadence_factors')
+        .select('upfront_months, discount_pct')
+        .order('upfront_months')
+      if (error) throw error
+      return data as PaymentCadenceFactor[]
+    },
+  })
+
   // Form state
   const [formData, setFormData] = useState({
     customer_id: '',
@@ -287,6 +304,11 @@ export default function QuoteBuilder() {
     use_aggregated_pricing: true,
     base_usage_ratio: 0.60,
     notes: '',
+    payment_upfront_months: 1,
+    payment_discount_override: null as number | null,
+    customer_discount_type: null as DiscountType | null,
+    customer_discount_value: null as number | null,
+    customer_discount_note: '',
   })
 
   // Update form when quote loads
@@ -302,6 +324,11 @@ export default function QuoteBuilder() {
         use_aggregated_pricing: quote.use_aggregated_pricing,
         base_usage_ratio: quote.base_usage_ratio ?? 0.60,
         notes: quote.notes || '',
+        payment_upfront_months: quote.payment_upfront_months ?? 1,
+        payment_discount_override: quote.payment_discount_override ?? null,
+        customer_discount_type: quote.customer_discount_type ?? null,
+        customer_discount_value: quote.customer_discount_value ?? null,
+        customer_discount_note: quote.customer_discount_note || '',
       })
       // Expand all packages by default
       setExpandedPackages(new Set(quote.quote_packages.map(p => p.id)))
@@ -857,6 +884,11 @@ export default function QuoteBuilder() {
           use_aggregated_pricing: formData.use_aggregated_pricing,
           base_usage_ratio: formData.base_usage_ratio,
           notes: formData.notes || null,
+          payment_upfront_months: formData.payment_upfront_months,
+          payment_discount_override: formData.payment_discount_override,
+          customer_discount_type: formData.customer_discount_type,
+          customer_discount_value: formData.customer_discount_value,
+          customer_discount_note: formData.customer_discount_note || null,
         })
         .eq('id', id)
 
@@ -922,10 +954,14 @@ export default function QuoteBuilder() {
   }
 
   // Handle PDF export
-  const handleExportPDF = () => {
+  const handleExportPDF = async () => {
     if (!quote) return
-    generateQuotePDF(quote)
-    toast({ title: 'PDF generated' })
+    try {
+      await generateQuotePDF(quote)
+      toast({ title: 'PDF generated' })
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Failed to generate PDF', description: error.message })
+    }
   }
 
   // Navigate to comparison view
@@ -1031,6 +1067,10 @@ export default function QuoteBuilder() {
                 <Button variant="outline" onClick={calculatePricing} disabled={calculating}>
                   <Calculator className="mr-2 h-4 w-4" />
                   {calculating ? 'Calculating...' : 'Calculate'}
+                </Button>
+                <Button variant="outline" onClick={() => navigate(`/quotes/${id}/present`)}>
+                  <Presentation className="mr-2 h-4 w-4" />
+                  Present
                 </Button>
               </>
             )}
@@ -1220,67 +1260,72 @@ export default function QuoteBuilder() {
 
         {/* Base/Usage Ratio Slider — sticky so it stays visible while scrolling through SKUs */}
         {hasCasSkus && (
-          <div className="sticky top-0 z-10 bg-background border border-border rounded-lg px-4 py-3 space-y-2 shadow-sm">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">Base/Usage Ratio (CAS)</label>
+          <Collapsible defaultOpen className="sticky top-0 z-10 bg-background border border-border rounded-lg shadow-sm">
+            <div className="flex items-center justify-between px-4 py-3">
+              <CollapsibleTrigger className="flex items-center gap-2">
+                <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform [[data-state=closed]>&]:rotate-[-90deg]" />
+                <label className="text-sm font-medium">Base/Usage Ratio (CAS)</label>
+              </CollapsibleTrigger>
               <Button size="sm" variant="outline" onClick={calculatePricing} disabled={calculating}>
                 <Calculator className="mr-2 h-4 w-4" />
                 {calculating ? 'Calculating...' : 'Calculate'}
               </Button>
             </div>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-muted-foreground w-12">Base</span>
-              <input
-                type="range"
-                min="1"
-                max="99"
-                step="1"
-                value={Math.round(formData.base_usage_ratio * 100)}
-                onChange={(e) => {
-                  const newRatio = parseInt(e.target.value) / 100
-                  setFormData(prev => ({ ...prev, base_usage_ratio: newRatio }))
-                  // Persist to DB immediately (debounced) so any refetch returns the correct value
-                  if (ratioSaveTimer.current) clearTimeout(ratioSaveTimer.current)
-                  ratioSaveTimer.current = setTimeout(async () => {
-                    if (!id) return
-                    await supabase.from('quotes').update({ base_usage_ratio: newRatio }).eq('id', id)
-                  }, 500)
-                  if (autoCalculate) {
-                    if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
-                    ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
-                  }
-                }}
-                className="flex-1"
-              />
-              <span className="text-xs text-muted-foreground w-12 text-right">Usage</span>
-            </div>
-            <div className="text-center text-sm font-mono">
-              {Math.round(formData.base_usage_ratio * 100)}% Base / {Math.round((1 - formData.base_usage_ratio) * 100)}% Usage
-            </div>
-            <div className="flex gap-2 justify-center">
-              {([{ label: 'Commitment (80/20)', value: 0.80, display: 80 }, { label: 'Standard (60/40)', value: 0.60, display: 60 }, { label: 'Pay-per-use (10/90)', value: 0.10, display: 10 }] as const).map(preset => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  className={`text-xs px-2 py-1 rounded border ${Math.round(formData.base_usage_ratio * 100) === preset.display ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
-                  onClick={() => {
-                    setFormData(prev => ({ ...prev, base_usage_ratio: preset.value }))
+            <CollapsibleContent className="px-4 pb-3 space-y-2 data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-muted-foreground w-12">Base</span>
+                <input
+                  type="range"
+                  min="1"
+                  max="99"
+                  step="1"
+                  value={Math.round(formData.base_usage_ratio * 100)}
+                  onChange={(e) => {
+                    const newRatio = parseInt(e.target.value) / 100
+                    setFormData(prev => ({ ...prev, base_usage_ratio: newRatio }))
+                    // Persist to DB immediately (debounced) so any refetch returns the correct value
                     if (ratioSaveTimer.current) clearTimeout(ratioSaveTimer.current)
                     ratioSaveTimer.current = setTimeout(async () => {
                       if (!id) return
-                      await supabase.from('quotes').update({ base_usage_ratio: preset.value }).eq('id', id)
+                      await supabase.from('quotes').update({ base_usage_ratio: newRatio }).eq('id', id)
                     }, 500)
                     if (autoCalculate) {
                       if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
                       ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
                     }
                   }}
-                >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
-          </div>
+                  className="flex-1"
+                />
+                <span className="text-xs text-muted-foreground w-12 text-right">Usage</span>
+              </div>
+              <div className="text-center text-sm font-mono">
+                {Math.round(formData.base_usage_ratio * 100)}% Base / {Math.round((1 - formData.base_usage_ratio) * 100)}% Usage
+              </div>
+              <div className="flex gap-2 justify-center">
+                {([{ label: 'Commitment (80/20)', value: 0.80, display: 80 }, { label: 'Standard (60/40)', value: 0.60, display: 60 }, { label: 'Pay-per-use (10/90)', value: 0.10, display: 10 }] as const).map(preset => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    className={`text-xs px-2 py-1 rounded border ${Math.round(formData.base_usage_ratio * 100) === preset.display ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'}`}
+                    onClick={() => {
+                      setFormData(prev => ({ ...prev, base_usage_ratio: preset.value }))
+                      if (ratioSaveTimer.current) clearTimeout(ratioSaveTimer.current)
+                      ratioSaveTimer.current = setTimeout(async () => {
+                        if (!id) return
+                        await supabase.from('quotes').update({ base_usage_ratio: preset.value }).eq('id', id)
+                      }, 500)
+                      if (autoCalculate) {
+                        if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
+                        ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
+                      }
+                    }}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         )}
 
         {/* SKU Mapping Warning */}
@@ -1538,7 +1583,7 @@ export default function QuoteBuilder() {
                             <TableHead className="text-right">Discount</TableHead>
                             <TableHead className="text-right">Unit Price</TableHead>
                             <TableHead className="text-right">Monthly</TableHead>
-                            <TableHead className="w-12"></TableHead>
+                            <TableHead className="w-20"></TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -1596,9 +1641,15 @@ export default function QuoteBuilder() {
                                   {item.monthly_total ? formatCurrency(item.monthly_total) : '-'}
                                 </TableCell>
                                 <TableCell>
-                                  <Button variant="ghost" size="icon" onClick={() => deleteLineItem.mutate(item.id)}>
-                                    <Trash2 className="h-4 w-4 text-destructive" />
-                                  </Button>
+                                  <div className="flex items-center">
+                                    <ItemDiscountPopover
+                                      item={item}
+                                      onApply={(updates) => updateLineItem.mutate({ itemId: item.id, updates })}
+                                    />
+                                    <Button variant="ghost" size="icon" onClick={() => deleteLineItem.mutate(item.id)}>
+                                      <Trash2 className="h-4 w-4 text-destructive" />
+                                    </Button>
+                                  </div>
                                 </TableCell>
                               </TableRow>
                             )
@@ -1809,6 +1860,49 @@ export default function QuoteBuilder() {
                 <div className="text-2xl font-bold">{formatCurrency(quote.total_annual)}</div>
               </div>
 
+              {/* Contract total + payment cadence discount + customer discount (commitment quotes only) */}
+              {formData.quote_type === 'commitment' &&
+                ((quote.payment_discount_pct != null && quote.payment_discount_pct > 0) ||
+                  (quote.customer_discount_amount != null && quote.customer_discount_amount > 0)) && (() => {
+                const maxTerm = Math.max(...(quote.quote_packages?.map(p => p.term_months) ?? [1]))
+                const contractTotal = quote.total_monthly * maxTerm
+                const paymentDiscountAmount = quote.payment_discount_pct != null && quote.payment_discount_pct > 0
+                  ? (quote.payment_discount_amount ?? 0)
+                  : 0
+                const customerDiscountAmount = quote.customer_discount_amount ?? 0
+                const customerDiscountLabel = quote.customer_discount_type === 'percent'
+                  ? `−${quote.customer_discount_value}%`
+                  : `−${formatCurrency(quote.customer_discount_value ?? 0)}`
+                return (
+                  <div className="rounded-lg border border-green-500/30 bg-green-500/5 p-4 space-y-2 text-sm">
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>Contract Total ({maxTerm} months)</span>
+                      <span>{formatCurrency(contractTotal)}</span>
+                    </div>
+                    {paymentDiscountAmount > 0 && (
+                      <div className="flex justify-between text-green-600">
+                        <span>
+                          Payment Discount ({quote.payment_upfront_months}m upfront, −{quote.payment_discount_pct}%)
+                        </span>
+                        <span>−{formatCurrency(paymentDiscountAmount)}</span>
+                      </div>
+                    )}
+                    {customerDiscountAmount > 0 && (
+                      <div className="flex justify-between text-green-600">
+                        <span>
+                          Customer Discount ({customerDiscountLabel})
+                        </span>
+                        <span>−{formatCurrency(customerDiscountAmount)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between font-semibold border-t border-green-500/20 pt-2">
+                      <span>Discounted Total</span>
+                      <span>{formatCurrency(contractTotal - paymentDiscountAmount - customerDiscountAmount)}</span>
+                    </div>
+                  </div>
+                )
+              })()}
+
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Quote Type</span>
@@ -1887,7 +1981,15 @@ export default function QuoteBuilder() {
                   </Label>
                   <Select
                     value={selectedTermMonths.toString()}
-                    onValueChange={(v) => setSelectedTermMonths(parseInt(v))}
+                    onValueChange={(v) => {
+                      setSelectedTermMonths(parseInt(v))
+                      // Use calculatePricing (not the lightweight pendingCalculation path) so the
+                      // new term is synced to quote_packages before the edge function runs.
+                      if (autoCalculate) {
+                        if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
+                        ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
+                      }
+                    }}
                   >
                     <SelectTrigger className="h-8 text-sm">
                       <SelectValue />
@@ -1901,7 +2003,191 @@ export default function QuoteBuilder() {
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    Applied to all packages on next Calculate
+                    {autoCalculate ? 'Applied to all packages automatically' : 'Applied to all packages on next Calculate'}
+                  </p>
+                </div>
+              )}
+
+              {/* Payment Cadence Discount (commitment quotes only) */}
+              {formData.quote_type === 'commitment' && (
+                <div className="pt-4 border-t space-y-3">
+                  <Label className="text-sm font-medium">Payment Cadence</Label>
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Upfront Payment Term</Label>
+                    <Select
+                      value={formData.payment_upfront_months.toString()}
+                      onValueChange={(v) => {
+                        setFormData(prev => ({
+                          ...prev,
+                          payment_upfront_months: parseInt(v),
+                          payment_discount_override: null,
+                        }))
+                        if (autoCalculate) {
+                          if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
+                          ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="h-8 text-sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {cadenceFactors.map((cf) => (
+                          <SelectItem key={cf.upfront_months} value={cf.upfront_months.toString()}>
+                            {cf.upfront_months === 1
+                              ? `Monthly (0%)`
+                              : `${cf.upfront_months} months upfront (−${cf.discount_pct}%)`}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">
+                      Discount Override % <span className="opacity-60">(optional)</span>
+                    </Label>
+                    <Input
+                      type="number"
+                      className="h-8 text-sm"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      placeholder={
+                        cadenceFactors.find(cf => cf.upfront_months === formData.payment_upfront_months)
+                          ? `Default: ${cadenceFactors.find(cf => cf.upfront_months === formData.payment_upfront_months)!.discount_pct}%`
+                          : 'e.g. 12.5'
+                      }
+                      value={formData.payment_discount_override ?? ''}
+                      onChange={(e) => {
+                        setFormData(prev => ({
+                          ...prev,
+                          payment_discount_override: e.target.value ? parseFloat(e.target.value) : null,
+                        }))
+                        if (autoCalculate) {
+                          if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
+                          ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
+                        }
+                      }}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {autoCalculate
+                        ? 'Overrides the table value. Applied to contract total automatically.'
+                        : 'Overrides the table value. Applied to contract total on next Calculate.'}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Customer Discount (commitment quotes only) */}
+              {formData.quote_type === 'commitment' && (
+                <div className="pt-4 border-t space-y-3">
+                  <Label className="text-sm font-medium">Customer Discount</Label>
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">
+                      Type <span className="opacity-60">(optional)</span>
+                    </Label>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant={formData.customer_discount_type === 'percent' ? 'secondary' : 'outline'}
+                        size="sm"
+                        className="h-8 flex-1 text-xs"
+                        onClick={() => {
+                          setFormData(prev => ({ ...prev, customer_discount_type: 'percent' }))
+                          if (autoCalculate) {
+                            if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
+                            ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
+                          }
+                        }}
+                      >
+                        Percent (%)
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={formData.customer_discount_type === 'fixed' ? 'secondary' : 'outline'}
+                        size="sm"
+                        className="h-8 flex-1 text-xs"
+                        onClick={() => {
+                          setFormData(prev => ({ ...prev, customer_discount_type: 'fixed' }))
+                          if (autoCalculate) {
+                            if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
+                            ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
+                          }
+                        }}
+                      >
+                        Fixed (€)
+                      </Button>
+                    </div>
+                  </div>
+                  {formData.customer_discount_type && (
+                    <>
+                      <div className="space-y-2">
+                        <Label className="text-xs text-muted-foreground">
+                          Discount Value ({formData.customer_discount_type === 'percent' ? '%' : '€'})
+                        </Label>
+                        <Input
+                          type="number"
+                          className="h-8 text-sm"
+                          min="0"
+                          step={formData.customer_discount_type === 'percent' ? '0.01' : '1'}
+                          placeholder={formData.customer_discount_type === 'percent' ? 'e.g. 5' : 'e.g. 10000'}
+                          value={formData.customer_discount_value ?? ''}
+                          onChange={(e) => {
+                            setFormData(prev => ({
+                              ...prev,
+                              customer_discount_value: e.target.value ? parseFloat(e.target.value) : null,
+                            }))
+                            if (autoCalculate) {
+                              if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
+                              ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
+                            }
+                          }}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-xs text-muted-foreground">
+                          Note <span className="opacity-60">(optional)</span>
+                        </Label>
+                        <Input
+                          type="text"
+                          className="h-8 text-sm"
+                          placeholder="e.g. Jan 2026 loyalty agreement"
+                          value={formData.customer_discount_note}
+                          onChange={(e) => {
+                            setFormData(prev => ({ ...prev, customer_discount_note: e.target.value }))
+                            if (autoCalculate) {
+                              if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
+                              ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
+                            }
+                          }}
+                        />
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs text-muted-foreground"
+                        onClick={() => {
+                          setFormData(prev => ({
+                            ...prev,
+                            customer_discount_type: null,
+                            customer_discount_value: null,
+                            customer_discount_note: '',
+                          }))
+                          if (autoCalculate) {
+                            if (ratioAutoCalcTimer.current) clearTimeout(ratioAutoCalcTimer.current)
+                            ratioAutoCalcTimer.current = setTimeout(() => calculatePricingRef.current(), 1500)
+                          }
+                        }}
+                      >
+                        Clear discount
+                      </Button>
+                    </>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    {autoCalculate
+                      ? 'One-off negotiated concession, applied to contract total automatically.'
+                      : 'One-off negotiated concession, applied to contract total on next Calculate.'}
                   </p>
                 </div>
               )}
@@ -2093,5 +2379,149 @@ export default function QuoteBuilder() {
         />
       )}
     </div>
+  )
+}
+
+/**
+ * Per-line-item customer discount "click into" control (SPEC-020 D11).
+ * Keeps its own local draft state, seeded from the item's persisted values
+ * each time the popover opens, so edits don't leak into other rows or
+ * survive a cancel (closing without Apply).
+ */
+function ItemDiscountPopover({
+  item,
+  onApply,
+}: {
+  item: QuoteItem
+  onApply: (updates: Partial<QuoteItem>) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [type, setType] = useState<DiscountType | null>(item.customer_discount_type ?? null)
+  const [value, setValue] = useState<number | null>(item.customer_discount_value ?? null)
+  const [note, setNote] = useState(item.customer_discount_note ?? '')
+
+  const hasDiscount = item.customer_discount_type != null && item.customer_discount_value != null
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (next) {
+          // Reseed the draft from the item's current persisted values on every open
+          setType(item.customer_discount_type ?? null)
+          setValue(item.customer_discount_value ?? null)
+          setNote(item.customer_discount_note ?? '')
+        }
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          variant={hasDiscount ? 'secondary' : 'ghost'}
+          size="icon"
+          title={
+            hasDiscount
+              ? `Customer discount: −${item.customer_discount_type === 'percent'
+                  ? `${item.customer_discount_value}%`
+                  : formatCurrency(item.customer_discount_value ?? 0)}`
+              : 'Add customer discount'
+          }
+        >
+          <Percent className={`h-4 w-4 ${hasDiscount ? 'text-green-600' : 'text-muted-foreground'}`} />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-64 p-3" align="end">
+        <div className="space-y-3">
+          <div className="text-sm font-medium">Customer Discount</div>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant={type === 'percent' ? 'secondary' : 'outline'}
+              size="sm"
+              className="h-8 flex-1 text-xs"
+              onClick={() => setType('percent')}
+            >
+              Percent (%)
+            </Button>
+            <Button
+              type="button"
+              variant={type === 'fixed' ? 'secondary' : 'outline'}
+              size="sm"
+              className="h-8 flex-1 text-xs"
+              onClick={() => setType('fixed')}
+            >
+              Fixed (€)
+            </Button>
+          </div>
+          {type && (
+            <>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">
+                  Value ({type === 'fixed' ? '€ per unit' : '%'})
+                </Label>
+                <Input
+                  type="number"
+                  className="h-8 text-sm"
+                  min="0"
+                  step={type === 'percent' ? '0.01' : '1'}
+                  placeholder={type === 'percent' ? 'e.g. 5' : 'e.g. 50'}
+                  value={value ?? ''}
+                  onChange={(e) => setValue(e.target.value ? parseFloat(e.target.value) : null)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">
+                  Note <span className="opacity-60">(optional)</span>
+                </Label>
+                <Input
+                  type="text"
+                  className="h-8 text-sm"
+                  placeholder="e.g. bundled discount"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                />
+              </div>
+            </>
+          )}
+          <div className="flex justify-between gap-2 pt-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-xs text-muted-foreground"
+              onClick={() => {
+                setType(null)
+                setValue(null)
+                setNote('')
+                onApply({
+                  customer_discount_type: null,
+                  customer_discount_value: null,
+                  customer_discount_note: null,
+                })
+                setOpen(false)
+              }}
+            >
+              Clear
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="text-xs"
+              disabled={!type || value == null}
+              onClick={() => {
+                onApply({
+                  customer_discount_type: type,
+                  customer_discount_value: value,
+                  customer_discount_note: note || null,
+                })
+                setOpen(false)
+              }}
+            >
+              Apply
+            </Button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }

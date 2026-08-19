@@ -67,6 +67,9 @@ interface QuoteItem {
   quantity: number;
   term_months: number | null;
   environment: 'production' | 'reference';
+  customer_discount_type?: 'percent' | 'fixed' | null;
+  customer_discount_value?: number | null;
+  customer_discount_note?: string | null;
 }
 
 interface PricingResult {
@@ -94,6 +97,7 @@ interface PricingContext {
   baseCharges: Map<string, BaseCharge>;
   envFactors: Map<string, Map<string, number>>;
   defaultEnvFactors: Map<string, number>;
+  cadenceFactors: Map<number, number>;  // upfront_months → discount_pct
 }
 
 interface TimePhase {
@@ -130,6 +134,11 @@ interface QuotePackage {
   start_date?: string;
   end_date?: string;
   quote_items: QuoteItem[];
+}
+
+interface PaymentCadenceFactor {
+  upfront_months: number;
+  discount_pct: number;
 }
 
 interface PerpetualConfig {
@@ -411,6 +420,22 @@ function calculateBaseCharge(
 }
 
 // ============================================================================
+// CUSTOMER-SPECIFIC (NEGOTIATED) PER-ITEM DISCOUNT
+// ============================================================================
+
+/** Applies a one-off customer-negotiated discount on top of the fully-computed unit price. */
+function applyCustomerItemDiscount(unitPrice: number, item: QuoteItem): number {
+  if (item.customer_discount_value == null) return unitPrice;
+  if (item.customer_discount_type === 'percent') {
+    return round4(unitPrice * (1 - item.customer_discount_value / 100));
+  }
+  if (item.customer_discount_type === 'fixed') {
+    return round4(Math.max(0, unitPrice - item.customer_discount_value));
+  }
+  return unitPrice;
+}
+
+// ============================================================================
 // CALCULATE PRICING FOR A SINGLE ITEM
 // ============================================================================
 
@@ -460,9 +485,19 @@ function calculateItemPricing(
       result.term_discount_pct = round2((1 - baseMrc / listBaseMrc) * 100);
       result.total_discount_pct = result.term_discount_pct;
     }
+
+    // Customer-negotiated per-item discount (last step before totals)
+    if (item.customer_discount_value != null) {
+      result.unit_price = applyCustomerItemDiscount(result.unit_price, item);
+      result.base_charge = result.unit_price;
+      if (listBaseMrc > 0) {
+        result.total_discount_pct = round2((1 - result.unit_price / listBaseMrc) * 100);
+      }
+      result.monthly_total = result.base_charge;
+    }
   } else {
     // Usage-based pricing
-    
+
     // List price (qty=1, no discounts)
     try {
       result.list_price = findUnitPrice(ctx, sku.id, 1);
@@ -487,6 +522,11 @@ function calculateItemPricing(
 
     // Final unit price
     result.unit_price = round4(priceAtQty * termFactor * result.env_factor);
+
+    // Customer-negotiated per-item discount (last step before totals)
+    if (item.customer_discount_value != null) {
+      result.unit_price = applyCustomerItemDiscount(result.unit_price, item);
+    }
 
     // Total discount
     if (result.list_price > 0) {
@@ -749,8 +789,24 @@ function calculateItemPricingWithPhases(
       result.unit_price = result.base_charge;
       result.ratio_factor = ratioFactor;
     }
+
+    // Customer-negotiated per-item discount (last step before totals).
+    // Only recompute when a discount is actually set — the ratio-factor adjustment
+    // above scales base_charge/unit_price but NOT listBaseMrc, so unconditionally
+    // recomputing total_discount_pct here would change its displayed value for
+    // every CAS base-charge item whenever the ratio differs from the 60/40
+    // default, even with zero customer discount configured.
+    if (item.customer_discount_value != null) {
+      result.unit_price = applyCustomerItemDiscount(result.unit_price, item);
+      result.base_charge = result.unit_price;
+      if (listBaseMrc > 0) {
+        result.total_discount_pct = round2((1 - result.unit_price / listBaseMrc) * 100);
+      }
+      result.monthly_total = result.base_charge;
+    }
   } else if (sku.is_direct_cost) {
-    // Direct-cost usage SKU: use base rate exactly, no discounts
+    // Direct-cost usage SKU: use base rate exactly, no systematic discounts —
+    // still apply the customer-negotiated discount, a deliberate per-item override
     const unitPrice = findUnitPrice(ctx, sku.id, 1);
     result.list_price = unitPrice;
     result.unit_price = unitPrice;
@@ -758,8 +814,15 @@ function calculateItemPricingWithPhases(
     result.term_discount_pct = 0;
     result.env_factor = 1;
     result.total_discount_pct = 0;
-    result.usage_total = round2(unitPrice * qty);
-    result.monthly_total = result.usage_total;
+
+    if (item.customer_discount_value != null) {
+      result.unit_price = applyCustomerItemDiscount(result.unit_price, item);
+      if (result.list_price > 0) {
+        result.total_discount_pct = round2((1 - result.unit_price / result.list_price) * 100);
+      }
+      result.usage_total = round2(result.unit_price * qty);
+      result.monthly_total = result.usage_total;
+    }
   } else {
     // Usage-based pricing
 
@@ -822,6 +885,16 @@ function calculateItemPricingWithPhases(
       result.usage_total = round2(result.unit_price * qty);
       result.monthly_total = result.usage_total;
       result.ratio_factor = ratioFactor;
+    }
+
+    // Customer-negotiated per-item discount (last step before totals)
+    if (item.customer_discount_value != null) {
+      result.unit_price = applyCustomerItemDiscount(result.unit_price, item);
+      if (result.list_price > 0) {
+        result.total_discount_pct = round2((1 - result.unit_price / result.list_price) * 100);
+      }
+      result.usage_total = round2(result.unit_price * qty);
+      result.monthly_total = result.usage_total;
     }
   }
 
@@ -934,7 +1007,6 @@ function calculatePerpetualPricing(
 // ============================================================================
 
 async function loadPricingContext(supabase: any): Promise<PricingContext> {
-  // Fire all 7 queries in parallel instead of sequentially
   const [
     { data: skusData },
     { data: modelsData },
@@ -943,6 +1015,7 @@ async function loadPricingContext(supabase: any): Promise<PricingContext> {
     { data: baseData },
     { data: envData },
     { data: defaultEnvData },
+    { data: cadenceData },
   ] = await Promise.all([
     supabase.from('skus').select('*').eq('is_active', true),
     supabase.from('pricing_models').select('*').eq('is_active', true),
@@ -951,6 +1024,7 @@ async function loadPricingContext(supabase: any): Promise<PricingContext> {
     supabase.from('base_charges').select('*'),
     supabase.from('env_factors').select('*'),
     supabase.from('default_env_factors').select('*'),
+    supabase.from('payment_cadence_factors').select('upfront_months, discount_pct'),
   ]);
 
   const skus = new Map<string, Sku>();
@@ -997,6 +1071,11 @@ async function loadPricingContext(supabase: any): Promise<PricingContext> {
     defaultEnvFactors.set(def.environment, def.factor);
   }
 
+  const cadenceFactors = new Map<number, number>();
+  for (const cf of (cadenceData as PaymentCadenceFactor[]) || []) {
+    cadenceFactors.set(cf.upfront_months, cf.discount_pct);
+  }
+
   return {
     skus,
     pricingModels,
@@ -1005,6 +1084,7 @@ async function loadPricingContext(supabase: any): Promise<PricingContext> {
     baseCharges,
     envFactors,
     defaultEnvFactors,
+    cadenceFactors,
   };
 }
 
@@ -1092,6 +1172,29 @@ serve(async (req) => {
         quoteTotalAnnual += result.annual_total;
       }
 
+      // Payment cadence discount — applied to full contract total
+      const paymentUpfrontMonths: number = quote.payment_upfront_months ?? 1;
+      const effectiveDiscountPct: number =
+        quote.payment_discount_override != null
+          ? Number(quote.payment_discount_override)
+          : (ctx.cadenceFactors.get(paymentUpfrontMonths) ?? 0);
+
+      const maxTermMonths = packages.reduce(
+        (max, pkg) => Math.max(max, pkg.term_months),
+        1
+      );
+      const contractTotal = round2(quoteTotalMonthly * maxTermMonths);
+      const paymentDiscountAmount = round2(contractTotal * effectiveDiscountPct / 100);
+
+      // Customer-negotiated quote-level discount — additive alongside payment-cadence
+      // discount (both computed off the same pre-discount contractTotal, not compounded)
+      const customerDiscountAmount: number =
+        quote.customer_discount_type === 'percent' && quote.customer_discount_value != null
+          ? round2(contractTotal * quote.customer_discount_value / 100)
+          : quote.customer_discount_type === 'fixed' && quote.customer_discount_value != null
+          ? round2(Math.min(quote.customer_discount_value, contractTotal))  // never discount below 0
+          : 0;
+
       // Build lookup maps for required fields needed by upsert
       // PostgREST merge-duplicates upsert attempts INSERT first, so NOT NULL columns
       // must be present even when updating existing rows.
@@ -1160,6 +1263,9 @@ serve(async (req) => {
         supabase.from('quotes').update({
           total_monthly: round2(quoteTotalMonthly),
           total_annual: round2(quoteTotalAnnual),
+          payment_discount_pct: effectiveDiscountPct,
+          payment_discount_amount: paymentDiscountAmount,
+          customer_discount_amount: customerDiscountAmount,
         }).eq('id', quote_id),
       ]);
 
@@ -1168,6 +1274,11 @@ serve(async (req) => {
           success: true,
           total_monthly: round2(quoteTotalMonthly),
           total_annual: round2(quoteTotalAnnual),
+          contract_total: contractTotal,
+          payment_discount_pct: effectiveDiscountPct,
+          payment_discount_amount: paymentDiscountAmount,
+          customer_discount_amount: customerDiscountAmount,
+          contract_total_discounted: round2(contractTotal - paymentDiscountAmount - customerDiscountAmount),
           items: results,
         }),
         {
