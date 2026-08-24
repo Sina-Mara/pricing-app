@@ -32,6 +32,10 @@ const PAYMENT_OPTION_TIERS: { label: string; months: number }[] = [
   { label: 'Annual', months: 12 },
 ]
 
+/** CCS 24/7 support SKUs are pulled out of the normal Solution/Application/Component
+ * order and rendered at the very end of the PDF's item table, per review feedback. */
+const DEFER_TO_END_SKU_CODES = new Set(['CCS_24_7', 'CCS_24_7_Overage'])
+
 const INK: [number, number, number] = [30, 41, 59]
 const MUTED: [number, number, number] = [100, 116, 139]
 const ACCENT: [number, number, number] = [27, 95, 168]
@@ -206,9 +210,13 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
 
     // Solution → Application → Component ordering, matching QuoteBuilder/QuotePresent —
     // used for item order only; no header/separator rows are rendered in the PDF table.
-    const orderedItems = groupQuoteItems(pkg.quote_items)
+    // CCS 24/7 support SKUs are then pulled out and moved to the very end.
+    const groupOrderedItems = groupQuoteItems(pkg.quote_items)
       .filter((row) => row.type === 'item')
       .map((row) => row.item)
+    const deferredItems = groupOrderedItems.filter((item) => DEFER_TO_END_SKU_CODES.has(item.sku?.code ?? ''))
+    const regularItems = groupOrderedItems.filter((item) => !DEFER_TO_END_SKU_CODES.has(item.sku?.code ?? ''))
+    const orderedItems = [...regularItems, ...deferredItems]
     const tableBody = orderedItems.map((item) => [
       item.sku?.code || '',
       item.sku?.description || '',
