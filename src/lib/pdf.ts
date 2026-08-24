@@ -1,7 +1,7 @@
 import jsPDF from 'jspdf'
-import autoTable from 'jspdf-autotable'
+import autoTable, { type CellHookData } from 'jspdf-autotable'
 import { supabase } from './supabase'
-import { formatCurrency, formatDate, formatPercent } from './utils'
+import { formatCurrency, formatDate } from './utils'
 import { round2 } from './pricing'
 import { groupQuoteItems } from './quote-item-grouping'
 import type { Quote, QuotePackage, QuoteItem, Customer, Sku } from '@/types/database'
@@ -38,8 +38,6 @@ const ACCENT: [number, number, number] = [27, 95, 168]
 const GREEN: [number, number, number] = [22, 163, 74]
 const RULE: [number, number, number] = [203, 213, 225]
 
-const ITEM_TABLE_COLUMNS = 7 // SKU, Description, Qty, Unit Price, Discount, Cust. Discount, Monthly
-
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image()
@@ -62,16 +60,25 @@ async function loadCadenceFactors(months: number[]): Promise<Map<number, number>
   return factors
 }
 
-function formatItemDiscount(pct: number | null): string {
-  if (!pct) return '-'
-  return pct > 0 ? `-${formatPercent(pct)}` : `+${formatPercent(Math.abs(pct))}`
-}
-
 function formatCustomerDiscount(item: QuoteItem): string {
   if (item.customer_discount_value == null) return '-'
   return item.customer_discount_type === 'percent'
     ? `-${item.customer_discount_value}%`
     : `-${formatCurrency(item.customer_discount_value)}`
+}
+
+/**
+ * jspdf-autotable's `columnStyles` only applies to body cells, never head cells
+ * (see its internal `colStyles = sectionName === 'body' ? columnStyles : {}`) —
+ * so a right-aligned numeric column otherwise ends up with a left-aligned header
+ * sitting above it. This forces the given column indices' header cells to match.
+ */
+function rightAlignHeaderColumns(columnIndexes: number[]) {
+  return (data: CellHookData) => {
+    if (data.section === 'head' && columnIndexes.includes(data.column.index)) {
+      data.cell.styles.halign = 'right'
+    }
+  }
 }
 
 export async function generateQuotePDF(quote: QuoteWithDetails) {
@@ -172,19 +179,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
   if (quote.valid_until) metaRow('Valid Until', formatDate(quote.valid_until))
   metaRow('Status', quote.status.toUpperCase())
 
-  y = Math.max(y, metaY) + 10
-
-  // ── Greeting + intro ────────────────────────────────────────────────────
-  doc.setFontSize(10)
-  doc.setFont('helvetica', 'normal')
-  doc.setTextColor(...INK)
-  doc.text('Dear Sir or Madam,', marginX, y)
-  y += 7
-  const introText = quote.title
-    ? `Please find below the requested rate sheet for ${quote.title}.`
-    : 'Please find below the requested rate sheet.'
-  doc.text(introText, marginX, y)
-  y += 12
+  y = Math.max(y, metaY) + 14
 
   // ── Rate Sheet heading ───────────────────────────────────────────────────
   doc.setFontSize(13)
@@ -209,34 +204,24 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     doc.setTextColor(...INK)
     y += 5
 
-    // Solution → Application → Component ordering, matching QuoteBuilder/QuotePresent
-    const groupedRows = groupQuoteItems(pkg.quote_items)
-    const tableBody = groupedRows.map((row) => {
-      if (row.type === 'header') {
-        return [
-          {
-            content: row.label,
-            colSpan: ITEM_TABLE_COLUMNS,
-            styles: { fontStyle: 'bold' as const, fillColor: [241, 245, 249] as [number, number, number] },
-          },
-        ]
-      }
-      const item = row.item
-      return [
-        item.sku?.code || '',
-        item.sku?.description || '',
-        item.quantity.toString(),
-        item.unit_price ? formatCurrency(item.unit_price) : '-',
-        formatItemDiscount(item.total_discount_pct),
-        formatCustomerDiscount(item),
-        item.monthly_total ? formatCurrency(item.monthly_total) : '-',
-      ]
-    })
+    // Solution → Application → Component ordering, matching QuoteBuilder/QuotePresent —
+    // used for item order only; no header/separator rows are rendered in the PDF table.
+    const orderedItems = groupQuoteItems(pkg.quote_items)
+      .filter((row) => row.type === 'item')
+      .map((row) => row.item)
+    const tableBody = orderedItems.map((item) => [
+      item.sku?.code || '',
+      item.sku?.description || '',
+      item.quantity.toString(),
+      item.unit_price ? formatCurrency(item.unit_price) : '-',
+      formatCustomerDiscount(item),
+      item.monthly_total ? formatCurrency(item.monthly_total) : '-',
+    ])
 
     autoTable(doc, {
       startY: y,
       margin: { left: marginX, right: marginX },
-      head: [['SKU', 'Description', 'Qty', 'Unit Price', 'Discount', 'Cust. Discount', 'Monthly']],
+      head: [['SKU', 'Description', 'Qty', 'Unit Price', 'Cust. Discount', 'Monthly']],
       body: tableBody,
       theme: 'plain',
       styles: {
@@ -255,10 +240,10 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
         1: { cellWidth: 'auto' },
         2: { cellWidth: 18, halign: 'right' },
         3: { cellWidth: 28, halign: 'right' },
-        4: { cellWidth: 22, halign: 'right' },
+        4: { cellWidth: 28, halign: 'right' },
         5: { cellWidth: 28, halign: 'right' },
-        6: { cellWidth: 28, halign: 'right' },
       },
+      didParseCell: rightAlignHeaderColumns([2, 3, 4, 5]),
     })
 
     y = (doc as any).lastAutoTable.finalY + 2
@@ -366,27 +351,9 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     doc.setFont('helvetica', 'normal')
   }
 
-  // ── Terms ────────────────────────────────────────────────────────────────
-  ensureSpace(25)
-  y += 20
-
-  doc.setFontSize(9)
-  doc.setFont('helvetica', 'normal')
-  doc.setTextColor(...MUTED)
-  doc.text('All prices exclusive of VAT unless stated otherwise.', marginX, y)
-  y += 5
-  doc.text('Payment terms: Net 30 days.', marginX, y)
-  y += 5
-  if (quote.valid_until) {
-    doc.text(`This rate sheet is valid until ${formatDate(quote.valid_until)}.`, marginX, y)
-    y += 5
-  }
-  doc.setTextColor(...INK)
-
   // ── Payment Options (Monthly / Quarterly / Annual comparison) ──────────
-  // Very bottom of the document, before the closing/signature — lets the
-  // customer compare billing frequencies rather than seeing only the one
-  // currently selected in the app.
+  // Very bottom of the document — lets the customer compare billing
+  // frequencies rather than seeing only the one currently selected in the app.
   if (quote.quote_type === 'commitment' && maxTerm > 0) {
     const cadenceFactors = await loadCadenceFactors(PAYMENT_OPTION_TIERS.map((t) => t.months))
 
@@ -438,33 +405,11 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
         2: { halign: 'right' },
         3: { halign: 'right' },
       },
+      didParseCell: rightAlignHeaderColumns([1, 2, 3]),
     })
 
     y = (doc as any).lastAutoTable.finalY
   }
-
-  // ── Closing ──────────────────────────────────────────────────────────────
-  ensureSpace(35)
-  y += 12
-  doc.setFontSize(10)
-  doc.setTextColor(...INK)
-  doc.text('Best regards,', marginX, y)
-  y += 5
-  doc.setFont('helvetica', 'bold')
-  doc.text('Cennso Technologies GmbH', marginX, y)
-  doc.setFont('helvetica', 'normal')
-
-  y += 15
-  ensureSpace(10)
-  doc.setDrawColor(...INK)
-  doc.setLineWidth(0.2)
-  doc.line(marginX, y, marginX + 60, y)
-  doc.line(110, y, 170, y)
-  y += 5
-  doc.setFontSize(8)
-  doc.setTextColor(...MUTED)
-  doc.text('Customer Signature', marginX, y)
-  doc.text('Date', 110, y)
 
   doc.save(`RateSheet-${quote.quote_number}.pdf`)
 }
