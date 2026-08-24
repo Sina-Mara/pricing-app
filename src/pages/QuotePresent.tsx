@@ -240,7 +240,7 @@ export default function QuotePresent() {
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-3xl font-bold tracking-tight">
-              {quote.title || `Quote ${quote.quote_number}`}
+              {quote.title || `Rate Sheet ${quote.quote_number}`}
             </h1>
             <Badge className={getStatusColor(quote.status)}>{quote.status}</Badge>
           </div>

@@ -1,6 +1,9 @@
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import { supabase } from './supabase'
 import { formatCurrency, formatDate, formatPercent } from './utils'
+import { round2 } from './pricing'
+import { groupQuoteItems } from './quote-item-grouping'
 import type { Quote, QuotePackage, QuoteItem, Customer, Sku } from '@/types/database'
 import cennsoLogoUrl from '@/assets/cennso-logo.png'
 
@@ -20,11 +23,22 @@ const LEGAL = {
   mail: 'sales@cennso.com',
 }
 
+/** Payment-cadence tiers surfaced in the bottom-of-document comparison — kept to the three billing
+ * frequencies a customer actually chooses between; the full tier table (24/36/48/60mo) is a
+ * commitment-length concept, not a billing-frequency one, and stays out of scope here. */
+const PAYMENT_OPTION_TIERS: { label: string; months: number }[] = [
+  { label: 'Monthly', months: 1 },
+  { label: 'Quarterly', months: 3 },
+  { label: 'Annual', months: 12 },
+]
+
 const INK: [number, number, number] = [30, 41, 59]
 const MUTED: [number, number, number] = [100, 116, 139]
 const ACCENT: [number, number, number] = [27, 95, 168]
 const GREEN: [number, number, number] = [22, 163, 74]
 const RULE: [number, number, number] = [203, 213, 225]
+
+const ITEM_TABLE_COLUMNS = 7 // SKU, Description, Qty, Unit Price, Discount, Cust. Discount, Monthly
 
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -35,12 +49,46 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   })
 }
 
+async function loadCadenceFactors(months: number[]): Promise<Map<number, number>> {
+  const { data, error } = await supabase
+    .from('payment_cadence_factors')
+    .select('upfront_months, discount_pct')
+    .in('upfront_months', months)
+
+  const factors = new Map<number, number>()
+  if (!error && data) {
+    for (const row of data) factors.set(row.upfront_months, row.discount_pct)
+  }
+  return factors
+}
+
+function formatItemDiscount(pct: number | null): string {
+  if (!pct) return '-'
+  return pct > 0 ? `-${formatPercent(pct)}` : `+${formatPercent(Math.abs(pct))}`
+}
+
+function formatCustomerDiscount(item: QuoteItem): string {
+  if (item.customer_discount_value == null) return '-'
+  return item.customer_discount_type === 'percent'
+    ? `-${item.customer_discount_value}%`
+    : `-${formatCurrency(item.customer_discount_value)}`
+}
+
 export async function generateQuotePDF(quote: QuoteWithDetails) {
-  const doc = new jsPDF()
+  const doc = new jsPDF({ orientation: 'landscape' })
   const pageWidth = doc.internal.pageSize.getWidth()
+  const pageHeight = doc.internal.pageSize.getHeight()
   const marginX = 20
   const rightX = pageWidth - marginX
-  let y = 18
+  const pageBottom = pageHeight - 20
+  let y = 16
+
+  const ensureSpace = (needed: number) => {
+    if (y + needed > pageBottom) {
+      doc.addPage()
+      y = 20
+    }
+  }
 
   // ── Letterhead ──────────────────────────────────────────────────────────
   try {
@@ -67,7 +115,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     ['Telefon', LEGAL.telefon],
     ['Mail', LEGAL.mail],
   ]
-  let legalY = 16
+  let legalY = 14
   for (const [label, value] of legalRows) {
     doc.text(label, rightX - 62, legalY)
     doc.text(value, rightX, legalY, { align: 'right' })
@@ -82,7 +130,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
 
   y += 12
 
-  // ── Customer address (left) + quote metadata (right) ───────────────────
+  // ── Customer address (left) + rate sheet metadata (right) ──────────────
   const blockTopY = y
 
   if (quote.customer) {
@@ -120,7 +168,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     metaY += 5
   }
   metaRow('Date', formatDate(quote.created_at), true)
-  metaRow('Quote', quote.quote_number, true)
+  metaRow('Rate Sheet', quote.quote_number, true)
   if (quote.valid_until) metaRow('Valid Until', formatDate(quote.valid_until))
   metaRow('Status', quote.status.toUpperCase())
 
@@ -133,25 +181,22 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
   doc.text('Dear Sir or Madam,', marginX, y)
   y += 7
   const introText = quote.title
-    ? `Please find below the requested quote for ${quote.title}.`
-    : 'Please find below the requested quote.'
+    ? `Please find below the requested rate sheet for ${quote.title}.`
+    : 'Please find below the requested rate sheet.'
   doc.text(introText, marginX, y)
   y += 12
 
-  // ── Quote heading ───────────────────────────────────────────────────────
+  // ── Rate Sheet heading ───────────────────────────────────────────────────
   doc.setFontSize(13)
   doc.setFont('helvetica', 'bold')
-  doc.text(`Quote ${quote.quote_number}`, marginX, y)
+  doc.text(`Rate Sheet ${quote.quote_number}`, marginX, y)
   y += 8
 
   // ── Packages ─────────────────────────────────────────────────────────────
   for (const pkg of quote.quote_packages) {
     if (!pkg.include_in_quote) continue
 
-    if (y > 250) {
-      doc.addPage()
-      y = 20
-    }
+    ensureSpace(30)
 
     doc.setFontSize(11)
     doc.setFont('helvetica', 'bold')
@@ -164,24 +209,35 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     doc.setTextColor(...INK)
     y += 5
 
-    const tableData = pkg.quote_items.map((item) => [
-      item.sku?.code || '',
-      item.sku?.description || '',
-      item.quantity.toString(),
-      item.environment,
-      item.unit_price ? formatCurrency(item.unit_price) : '-',
-      item.total_discount_pct
-        ? item.total_discount_pct > 0
-          ? `-${formatPercent(item.total_discount_pct)}`
-          : `+${formatPercent(Math.abs(item.total_discount_pct))}`
-        : '-',
-      item.monthly_total ? formatCurrency(item.monthly_total) : '-',
-    ])
+    // Solution → Application → Component ordering, matching QuoteBuilder/QuotePresent
+    const groupedRows = groupQuoteItems(pkg.quote_items)
+    const tableBody = groupedRows.map((row) => {
+      if (row.type === 'header') {
+        return [
+          {
+            content: row.label,
+            colSpan: ITEM_TABLE_COLUMNS,
+            styles: { fontStyle: 'bold' as const, fillColor: [241, 245, 249] as [number, number, number] },
+          },
+        ]
+      }
+      const item = row.item
+      return [
+        item.sku?.code || '',
+        item.sku?.description || '',
+        item.quantity.toString(),
+        item.unit_price ? formatCurrency(item.unit_price) : '-',
+        formatItemDiscount(item.total_discount_pct),
+        formatCustomerDiscount(item),
+        item.monthly_total ? formatCurrency(item.monthly_total) : '-',
+      ]
+    })
 
     autoTable(doc, {
       startY: y,
-      head: [['SKU', 'Description', 'Qty', 'Env', 'Unit Price', 'Discount', 'Monthly']],
-      body: tableData,
+      margin: { left: marginX, right: marginX },
+      head: [['SKU', 'Description', 'Qty', 'Unit Price', 'Discount', 'Cust. Discount', 'Monthly']],
+      body: tableBody,
       theme: 'plain',
       styles: {
         fontSize: 9,
@@ -195,16 +251,13 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
         lineColor: INK,
       },
       columnStyles: {
-        0: { cellWidth: 25 },
-        1: { cellWidth: 45 },
-        2: { cellWidth: 15, halign: 'right' },
-        3: { cellWidth: 22 },
-        4: { cellWidth: 25, halign: 'right' },
-        5: { cellWidth: 20, halign: 'right' },
-        6: { cellWidth: 25, halign: 'right' },
-      },
-      didDrawPage: () => {
-        // no-op placeholder — kept for parity if page-numbered footers are added later
+        0: { cellWidth: 30 },
+        1: { cellWidth: 'auto' },
+        2: { cellWidth: 18, halign: 'right' },
+        3: { cellWidth: 28, halign: 'right' },
+        4: { cellWidth: 22, halign: 'right' },
+        5: { cellWidth: 28, halign: 'right' },
+        6: { cellWidth: 28, halign: 'right' },
       },
     })
 
@@ -226,17 +279,11 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     doc.setTextColor(...INK)
     y += 12
 
-    if (y > 250) {
-      doc.addPage()
-      y = 20
-    }
+    ensureSpace(1)
   }
 
   // ── Grand Total ──────────────────────────────────────────────────────────
-  if (y > 240) {
-    doc.addPage()
-    y = 20
-  }
+  ensureSpace(20)
 
   doc.setDrawColor(...INK)
   doc.setLineWidth(0.4)
@@ -255,6 +302,11 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
   doc.setTextColor(...INK)
 
   // ── Contract total, payment cadence discount, customer discount ────────
+  const maxTerm = quote.quote_packages.length > 0
+    ? Math.max(...quote.quote_packages.map((p) => p.term_months))
+    : 0
+  const rawContractTotal = quote.total_monthly * maxTerm
+
   const hasPaymentDiscount =
     quote.quote_type === 'commitment' &&
     quote.payment_discount_pct != null &&
@@ -264,17 +316,16 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
   const hasCustomerDiscount =
     quote.customer_discount_amount != null && quote.customer_discount_amount > 0
 
-  if (hasPaymentDiscount || hasCustomerDiscount) {
-    const maxTerm = Math.max(...quote.quote_packages.map((p) => p.term_months))
-    const contractTotal = quote.total_monthly * maxTerm
-    const paymentDiscountAmount = hasPaymentDiscount ? quote.payment_discount_amount! : 0
-    const customerDiscountAmount = hasCustomerDiscount ? quote.customer_discount_amount! : 0
+  const paymentDiscountAmount = hasPaymentDiscount ? quote.payment_discount_amount! : 0
+  const customerDiscountAmount = hasCustomerDiscount ? quote.customer_discount_amount! : 0
 
+  if (hasPaymentDiscount || hasCustomerDiscount) {
+    ensureSpace(30)
     y += 9
     doc.setFontSize(10)
     doc.setFont('helvetica', 'normal')
     doc.text(`Contract Total (${maxTerm} months)`, marginX, y)
-    doc.text(formatCurrency(contractTotal), rightX, y, { align: 'right' })
+    doc.text(formatCurrency(rawContractTotal), rightX, y, { align: 'right' })
 
     if (hasPaymentDiscount) {
       y += 6
@@ -307,7 +358,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     doc.setFont('helvetica', 'bold')
     doc.text('Discounted Contract Total', marginX, y)
     doc.text(
-      formatCurrency(contractTotal - paymentDiscountAmount - customerDiscountAmount),
+      formatCurrency(rawContractTotal - paymentDiscountAmount - customerDiscountAmount),
       rightX,
       y,
       { align: 'right' }
@@ -315,12 +366,9 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     doc.setFont('helvetica', 'normal')
   }
 
-  // ── Terms & closing ──────────────────────────────────────────────────────
+  // ── Terms ────────────────────────────────────────────────────────────────
+  ensureSpace(25)
   y += 20
-  if (y > 250) {
-    doc.addPage()
-    y = 20
-  }
 
   doc.setFontSize(9)
   doc.setFont('helvetica', 'normal')
@@ -330,13 +378,76 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
   doc.text('Payment terms: Net 30 days.', marginX, y)
   y += 5
   if (quote.valid_until) {
-    doc.text(`This quote is valid until ${formatDate(quote.valid_until)}.`, marginX, y)
+    doc.text(`This rate sheet is valid until ${formatDate(quote.valid_until)}.`, marginX, y)
     y += 5
   }
   doc.setTextColor(...INK)
 
-  y += 10
+  // ── Payment Options (Monthly / Quarterly / Annual comparison) ──────────
+  // Very bottom of the document, before the closing/signature — lets the
+  // customer compare billing frequencies rather than seeing only the one
+  // currently selected in the app.
+  if (quote.quote_type === 'commitment' && maxTerm > 0) {
+    const cadenceFactors = await loadCadenceFactors(PAYMENT_OPTION_TIERS.map((t) => t.months))
+
+    ensureSpace(35)
+    y += 10
+    doc.setFontSize(11)
+    doc.setFont('helvetica', 'bold')
+    doc.setTextColor(...INK)
+    doc.text('Payment Options', marginX, y)
+    y += 5
+
+    const optionRows = PAYMENT_OPTION_TIERS.map((tier) => {
+      const discountPct = cadenceFactors.get(tier.months) ?? 0
+      const discountAmount = round2(rawContractTotal * discountPct / 100)
+      const discountedTotal = rawContractTotal - discountAmount - customerDiscountAmount
+      return { ...tier, discountPct, discountedTotal }
+    })
+
+    autoTable(doc, {
+      startY: y,
+      margin: { left: marginX, right: marginX },
+      head: [['', ...optionRows.map((o) => o.label)]],
+      body: [
+        ['Upfront', ...optionRows.map((o) => `${o.months} month${o.months === 1 ? '' : 's'}`)],
+        ['Discount', ...optionRows.map((o) => `${o.discountPct}%`)],
+        [
+          { content: 'Discounted Contract Total', styles: { fontStyle: 'bold' as const } },
+          ...optionRows.map((o) => ({
+            content: formatCurrency(o.discountedTotal),
+            styles: { fontStyle: 'bold' as const },
+          })),
+        ],
+      ],
+      theme: 'plain',
+      styles: {
+        fontSize: 9,
+        textColor: INK,
+        lineColor: RULE,
+      },
+      headStyles: {
+        fontStyle: 'bold',
+        textColor: INK,
+        lineWidth: { bottom: 0.4 },
+        lineColor: INK,
+      },
+      columnStyles: {
+        0: { cellWidth: 55 },
+        1: { halign: 'right' },
+        2: { halign: 'right' },
+        3: { halign: 'right' },
+      },
+    })
+
+    y = (doc as any).lastAutoTable.finalY
+  }
+
+  // ── Closing ──────────────────────────────────────────────────────────────
+  ensureSpace(35)
+  y += 12
   doc.setFontSize(10)
+  doc.setTextColor(...INK)
   doc.text('Best regards,', marginX, y)
   y += 5
   doc.setFont('helvetica', 'bold')
@@ -344,10 +455,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
   doc.setFont('helvetica', 'normal')
 
   y += 15
-  if (y > 260) {
-    doc.addPage()
-    y = 20
-  }
+  ensureSpace(10)
   doc.setDrawColor(...INK)
   doc.setLineWidth(0.2)
   doc.line(marginX, y, marginX + 60, y)
@@ -358,5 +466,5 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
   doc.text('Customer Signature', marginX, y)
   doc.text('Date', 110, y)
 
-  doc.save(`Quote-${quote.quote_number}.pdf`)
+  doc.save(`RateSheet-${quote.quote_number}.pdf`)
 }

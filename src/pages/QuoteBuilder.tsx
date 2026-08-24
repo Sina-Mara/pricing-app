@@ -57,7 +57,6 @@ import {
   Repeat,
   Lock,
   Presentation,
-  Percent,
 } from 'lucide-react'
 import { formatCurrency, formatPercent, getStatusColor } from '@/lib/utils'
 import type {
@@ -1581,9 +1580,10 @@ export default function QuoteBuilder() {
                             <TableHead className="w-24">Qty</TableHead>
                             <TableHead className="text-right">List Price</TableHead>
                             <TableHead className="text-right">Discount</TableHead>
+                            <TableHead className="text-right">Cust. Discount</TableHead>
                             <TableHead className="text-right">Unit Price</TableHead>
                             <TableHead className="text-right">Monthly</TableHead>
-                            <TableHead className="w-20"></TableHead>
+                            <TableHead className="w-12"></TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -1627,6 +1627,12 @@ export default function QuoteBuilder() {
                                       : `+${formatPercent(Math.abs(item.total_discount_pct))}`
                                     : '-'}
                                 </TableCell>
+                                <TableCell className="text-right">
+                                  <ItemDiscountPopover
+                                    item={item}
+                                    onApply={(updates) => updateLineItem.mutate({ itemId: item.id, updates })}
+                                  />
+                                </TableCell>
                                 <TableCell className="text-right font-medium">
                                   {item.unit_price ? (
                                     <div>
@@ -1642,10 +1648,6 @@ export default function QuoteBuilder() {
                                 </TableCell>
                                 <TableCell>
                                   <div className="flex items-center">
-                                    <ItemDiscountPopover
-                                      item={item}
-                                      onApply={(updates) => updateLineItem.mutate({ itemId: item.id, updates })}
-                                    />
                                     <Button variant="ghost" size="icon" onClick={() => deleteLineItem.mutate(item.id)}>
                                       <Trash2 className="h-4 w-4 text-destructive" />
                                     </Button>
@@ -2401,6 +2403,11 @@ function ItemDiscountPopover({
   const [note, setNote] = useState(item.customer_discount_note ?? '')
 
   const hasDiscount = item.customer_discount_type != null && item.customer_discount_value != null
+  const discountLabel = hasDiscount
+    ? `-${item.customer_discount_type === 'percent'
+        ? `${item.customer_discount_value}%`
+        : formatCurrency(item.customer_discount_value ?? 0)}`
+    : '-'
 
   return (
     <Popover
@@ -2416,19 +2423,13 @@ function ItemDiscountPopover({
       }}
     >
       <PopoverTrigger asChild>
-        <Button
-          variant={hasDiscount ? 'secondary' : 'ghost'}
-          size="icon"
-          title={
-            hasDiscount
-              ? `Customer discount: −${item.customer_discount_type === 'percent'
-                  ? `${item.customer_discount_value}%`
-                  : formatCurrency(item.customer_discount_value ?? 0)}`
-              : 'Add customer discount'
-          }
+        <button
+          type="button"
+          className={`w-full text-right hover:underline decoration-dotted underline-offset-2 ${hasDiscount ? 'text-green-600 font-medium' : 'text-muted-foreground'}`}
+          title={hasDiscount ? `Customer discount: ${discountLabel}` : 'Add customer discount'}
         >
-          <Percent className={`h-4 w-4 ${hasDiscount ? 'text-green-600' : 'text-muted-foreground'}`} />
-        </Button>
+          {discountLabel}
+        </button>
       </PopoverTrigger>
       <PopoverContent className="w-64 p-3" align="end">
         <div className="space-y-3">
