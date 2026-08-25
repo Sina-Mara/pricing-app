@@ -44,9 +44,9 @@ export interface SkuCatalogDialogProps {
 const CATEGORY_ORDER: SkuCategory[] = ['cas', 'cno', 'ccs', 'default']
 
 const CATEGORY_LABELS: Record<SkuCategory, string> = {
-  cas: 'CAS — Connectivity as a Service',
-  cno: 'CNO — Cloud Network Operations',
-  ccs: 'CCS — Cloud Core Services',
+  cas: 'CAS — Cennso Application Support',
+  cno: 'CNO — Cennso Network Operations',
+  ccs: 'CCS — Cennso Care Service',
   default: 'Default',
 }
 

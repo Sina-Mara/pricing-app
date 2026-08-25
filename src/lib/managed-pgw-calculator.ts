@@ -34,9 +34,9 @@ export const MANAGED_PGW_TIERS = [
 
 /** Fixed topology SKUs — quantities derived from deployment inputs, constant across tiers */
 export const PGW_TOPOLOGY_SKUS = [
-  'Cennso_Sites',
-  'Cennso_vCores',
-  'Cennso_CoreCluster',
+  'cas-cennso-site-m1',
+  'cas-cennso-vcore-m1',
+  'cas-cennso-cc-m1',
   'CNO_Sites',
   'CNO_Nodes',
   'CNO_DB',
@@ -44,15 +44,15 @@ export const PGW_TOPOLOGY_SKUS = [
 
 /** Tier-variable SKUs — quantities change per tier */
 export const PGW_TIER_SKUS = [
-  'SMC_sessions',   // = SAU (concurrent attached connections)
-  'UPG_Bandwidth',  // = tier peak throughput guardrail in Mbit/s
+  'cas-smc-cos-m1',   // = SAU (concurrent attached connections)
+  'cas-upg-atp-m1',  // = tier peak throughput guardrail in Mbit/s
 ] as const;
 
 /** Base charge SKUs — flat MRC regardless of tier */
 export const PGW_BASE_SKUS = [
-  'Cennso_base',
-  'SMC_base',
-  'UPG_base',
+  'cas-cennso-base-m1',
+  'cas-smc-base-m1',
+  'cas-upg-base-m1',
   'CCS_base',
   'CNO_base',
   'CNO_24_7',
@@ -60,17 +60,17 @@ export const PGW_BASE_SKUS = [
 ] as const;
 
 /** SKUs whose cost is shared across CNS customers and must be allocated by share %. */
-const SHARED_SKUS = new Set(['Cennso_base', 'CNO_base', 'CNO_24_7']);
+const SHARED_SKUS = new Set(['cas-cennso-base-m1', 'CNO_base', 'CNO_24_7']);
 
 const SKU_CATEGORIES: Record<string, 'cas' | 'cno' | 'ccs'> = {
-  Cennso_Sites:       'cas',
-  Cennso_vCores:      'cas',
-  Cennso_CoreCluster: 'cas',
-  SMC_sessions:       'cas',
-  UPG_Bandwidth:      'cas',
-  Cennso_base:        'cas',
-  SMC_base:           'cas',
-  UPG_base:           'cas',
+  'cas-cennso-site-m1':  'cas',
+  'cas-cennso-vcore-m1': 'cas',
+  'cas-cennso-cc-m1':    'cas',
+  'cas-smc-cos-m1':      'cas',
+  'cas-upg-atp-m1':      'cas',
+  'cas-cennso-base-m1':  'cas',
+  'cas-smc-base-m1':     'cas',
+  'cas-upg-base-m1':     'cas',
   CCS_base:           'ccs',
   CNO_Sites:          'cno',
   CNO_Nodes:          'cno',
@@ -82,17 +82,17 @@ const SKU_CATEGORIES: Record<string, 'cas' | 'cno' | 'ccs'> = {
 
 
 const SKU_LABELS: Record<string, string> = {
-  Cennso_Sites:      'Cennso Sites',
-  Cennso_vCores:     'Cennso vCores',
-  Cennso_CoreCluster:'Cennso Core Cluster',
+  'cas-cennso-site-m1':  'Cennso Sites',
+  'cas-cennso-vcore-m1': 'Cennso vCores',
+  'cas-cennso-cc-m1':    'Cennso Core Cluster',
   CNO_Sites:         'CNO Sites',
   CNO_Nodes:         'CNO Worker Nodes',
   CNO_DB:            'CNO Database Instances',
-  SMC_sessions:      'SMC Sessions (SAU)',
-  UPG_Bandwidth:     'UPG Bandwidth (Mbit/s)',
-  Cennso_base:       'Cennso Base',
-  SMC_base:          'SMC Base',
-  UPG_base:          'UPG Base',
+  'cas-smc-cos-m1':      'SMC Sessions (SAU)',
+  'cas-upg-atp-m1':      'UPG Bandwidth (Mbit/s)',
+  'cas-cennso-base-m1':  'Cennso Base',
+  'cas-smc-base-m1':     'SMC Base',
+  'cas-upg-base-m1':     'UPG Base',
   CCS_base:          'CCS Base',
   CNO_base:          'CNO Management Base',
   CNO_24_7:          'CNO 24/7 Support',
@@ -141,9 +141,9 @@ export interface ManagedPgwResult {
 /** Derive fixed-topology SKU quantities from deployment inputs. */
 export function computeTopologyQuantities(inputs: ManagedPgwTopologyInputs): Record<string, number> {
   return {
-    Cennso_Sites:       inputs.num_sites,
-    Cennso_vCores:      inputs.vcores_per_site * inputs.num_sites,
-    Cennso_CoreCluster: inputs.num_sites,
+    'cas-cennso-site-m1':       inputs.num_sites,
+    'cas-cennso-vcore-m1':      inputs.vcores_per_site * inputs.num_sites,
+    'cas-cennso-cc-m1': inputs.num_sites,
     CNO_Sites:          inputs.num_sites,
     CNO_Nodes:          inputs.nodes_per_cno_site * inputs.num_sites,
     CNO_DB:             inputs.cno_db_instances,
@@ -193,7 +193,7 @@ export function migrateTopologyInputs(raw: Record<string, unknown>): ManagedPgwT
  * Calculate the 10-tier per-SAU SaaS price table for a Managed PGW service.
  *
  * For each tier:
- *   1. Set SMC_sessions = tier max SAU, UPG_Bandwidth = tier throughput in Mbit/s
+ *   1. Set cas-smc-cos-m1 = tier max SAU, cas-upg-atp-m1 = tier throughput in Mbit/s
  *   2. Price all SKUs (topology + tier-variable + base charges + external infra)
  *   3. totalMonthlyCost / maxSau = Y1 unit price
  *   4. Apply 6% compound annual erosion for Y2–Y5
@@ -249,8 +249,8 @@ export function calculateManagedPgwTiers(
 
     // Tier-variable SKUs
     const tierVariableQtys: Record<string, number> = {
-      SMC_sessions:  maxSau,
-      UPG_Bandwidth: throughputMbps,
+      'cas-smc-cos-m1':  maxSau,
+      'cas-upg-atp-m1': throughputMbps,
     };
     for (const skuCode of PGW_TIER_SKUS) {
       const qty = tierVariableQtys[skuCode] ?? 0;

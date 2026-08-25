@@ -1580,7 +1580,7 @@ export default function QuoteBuilder() {
                             <TableHead className="w-24">Qty</TableHead>
                             <TableHead className="text-right">List Price</TableHead>
                             <TableHead className="text-right">Discount</TableHead>
-                            <TableHead className="text-right">Cust. Discount</TableHead>
+                            <TableHead className="text-right">CNS Discount</TableHead>
                             <TableHead className="text-right">Unit Price</TableHead>
                             <TableHead className="text-right">Monthly</TableHead>
                             <TableHead className="w-12"></TableHead>
@@ -1892,7 +1892,7 @@ export default function QuoteBuilder() {
                     {customerDiscountAmount > 0 && (
                       <div className="flex justify-between text-green-600">
                         <span>
-                          Customer Discount ({customerDiscountLabel})
+                          CNS Discount ({customerDiscountLabel})
                         </span>
                         <span>−{formatCurrency(customerDiscountAmount)}</span>
                       </div>
@@ -2080,10 +2080,10 @@ export default function QuoteBuilder() {
                 </div>
               )}
 
-              {/* Customer Discount (commitment quotes only) */}
+              {/* CNS Discount (commitment quotes only) */}
               {formData.quote_type === 'commitment' && (
                 <div className="pt-4 border-t space-y-3">
-                  <Label className="text-sm font-medium">Customer Discount</Label>
+                  <Label className="text-sm font-medium">CNS Discount</Label>
                   <div className="space-y-2">
                     <Label className="text-xs text-muted-foreground">
                       Type <span className="opacity-60">(optional)</span>
@@ -2426,14 +2426,14 @@ function ItemDiscountPopover({
         <button
           type="button"
           className={`w-full text-right hover:underline decoration-dotted underline-offset-2 ${hasDiscount ? 'text-green-600 font-medium' : 'text-muted-foreground'}`}
-          title={hasDiscount ? `Customer discount: ${discountLabel}` : 'Add customer discount'}
+          title={hasDiscount ? `CNS discount: ${discountLabel}` : 'Add CNS discount'}
         >
           {discountLabel}
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-64 p-3" align="end">
         <div className="space-y-3">
-          <div className="text-sm font-medium">Customer Discount</div>
+          <div className="text-sm font-medium">CNS Discount</div>
           <div className="flex gap-2">
             <Button
               type="button"

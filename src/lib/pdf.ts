@@ -23,18 +23,29 @@ const LEGAL = {
   mail: 'sales@cennso.com',
 }
 
-/** Payment-cadence tiers surfaced in the bottom-of-document comparison — kept to the three billing
- * frequencies a customer actually chooses between; the full tier table (24/36/48/60mo) is a
- * commitment-length concept, not a billing-frequency one, and stays out of scope here. */
-const PAYMENT_OPTION_TIERS: { label: string; months: number }[] = [
-  { label: 'Monthly', months: 1 },
-  { label: 'Quarterly', months: 3 },
-  { label: 'Annual', months: 12 },
+/** Payment-cadence tiers surfaced as full period-by-period schedules — kept to the three
+ * billing frequencies a customer actually chooses between; the full tier table
+ * (24/36/48/60mo) is a commitment-length concept, not a billing-frequency one, and
+ * stays out of scope here. */
+const PAYMENT_SCHEDULE_TIERS: { label: string; periodLabel: string; months: number }[] = [
+  { label: 'Monthly', periodLabel: 'Month', months: 1 },
+  { label: 'Quarterly', periodLabel: 'Quarter', months: 3 },
+  { label: 'Annual', periodLabel: 'Year', months: 12 },
 ]
 
-/** CCS 24/7 support SKUs are pulled out of the normal Solution/Application/Component
- * order and rendered at the very end of the PDF's item table, per review feedback. */
-const DEFER_TO_END_SKU_CODES = new Set(['CCS_24_7', 'CCS_24_7_Overage'])
+/** Item table is sectioned by SKU category, in this fixed display order. */
+const CATEGORY_SECTION_ORDER: Array<'ccs' | 'cas' | 'cno'> = ['ccs', 'cas', 'cno']
+const CATEGORY_SECTION_LABELS: Record<string, string> = {
+  ccs: 'CCS — Cennso Care Service',
+  cas: 'CAS — Cennso Application Support',
+  cno: 'CNO — Cennso Network Operations',
+}
+
+/** Within the CCS section specifically, the 24/7 support SKUs sort last (they're
+ * ordinary CCS-category items, not a separate section — just kept at the end of it). */
+const CCS_SORT_LAST_CODES = new Set(['ccs-24/7-m1', 'ccs-24/7-add-h1'])
+
+const ITEM_TABLE_COLUMNS = 6 // SKU, Description, Qty, Unit Price, CNS Discount, Monthly
 
 const INK: [number, number, number] = [30, 41, 59]
 const MUTED: [number, number, number] = [100, 116, 139]
@@ -208,28 +219,57 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     doc.setTextColor(...INK)
     y += 5
 
-    // Solution → Application → Component ordering, matching QuoteBuilder/QuotePresent —
-    // used for item order only; no header/separator rows are rendered in the PDF table.
-    // CCS 24/7 support SKUs are then pulled out and moved to the very end.
+    // Solution → Application → Component ordering (groupQuoteItems) gives the item order
+    // used *within* each section; the sections themselves are by category, fixed order
+    // CCS → CAS → CNO, per review feedback. Within CCS specifically, the 24/7 support
+    // SKUs sort last — they're ordinary CCS items, not a section of their own.
     const groupOrderedItems = groupQuoteItems(pkg.quote_items)
       .filter((row) => row.type === 'item')
       .map((row) => row.item)
-    const deferredItems = groupOrderedItems.filter((item) => DEFER_TO_END_SKU_CODES.has(item.sku?.code ?? ''))
-    const regularItems = groupOrderedItems.filter((item) => !DEFER_TO_END_SKU_CODES.has(item.sku?.code ?? ''))
-    const orderedItems = [...regularItems, ...deferredItems]
-    const tableBody = orderedItems.map((item) => [
-      item.sku?.code || '',
-      item.sku?.description || '',
-      item.quantity.toString(),
-      item.unit_price ? formatCurrency(item.unit_price) : '-',
-      formatCustomerDiscount(item),
-      item.monthly_total ? formatCurrency(item.monthly_total) : '-',
-    ])
+
+    const sectionedItems: { label: string; items: typeof groupOrderedItems }[] = []
+    const seenCategories = new Set<string>()
+    for (const cat of CATEGORY_SECTION_ORDER) {
+      seenCategories.add(cat)
+      const itemsInCategory = groupOrderedItems.filter((item) => (item.sku?.category ?? 'default') === cat)
+      if (itemsInCategory.length === 0) continue
+      const items = cat === 'ccs'
+        ? [
+            ...itemsInCategory.filter((item) => !CCS_SORT_LAST_CODES.has(item.sku?.code ?? '')),
+            ...itemsInCategory.filter((item) => CCS_SORT_LAST_CODES.has(item.sku?.code ?? '')),
+          ]
+        : itemsInCategory
+      sectionedItems.push({ label: CATEGORY_SECTION_LABELS[cat], items })
+    }
+    // Anything outside CCS/CAS/CNO (e.g. category 'default') still needs to render somewhere
+    const otherItems = groupOrderedItems.filter((item) => !seenCategories.has(item.sku?.category ?? 'default'))
+    if (otherItems.length > 0) sectionedItems.push({ label: 'Other', items: otherItems })
+
+    const tableBody: any[] = []
+    for (const section of sectionedItems) {
+      tableBody.push([
+        {
+          content: section.label,
+          colSpan: ITEM_TABLE_COLUMNS,
+          styles: { fontStyle: 'bold' as const, fillColor: [241, 245, 249] as [number, number, number] },
+        },
+      ])
+      for (const item of section.items) {
+        tableBody.push([
+          item.sku?.code || '',
+          item.sku?.description || '',
+          item.quantity.toString(),
+          item.unit_price ? formatCurrency(item.unit_price) : '-',
+          formatCustomerDiscount(item),
+          item.monthly_total ? formatCurrency(item.monthly_total) : '-',
+        ])
+      }
+    }
 
     autoTable(doc, {
       startY: y,
       margin: { left: marginX, right: marginX },
-      head: [['SKU', 'Description', 'Qty', 'Unit Price', 'Cust. Discount', 'Monthly']],
+      head: [['SKU', 'Description', 'Qty', 'Unit Price', 'CNS Discount', 'Monthly']],
       body: tableBody,
       theme: 'plain',
       styles: {
@@ -244,7 +284,10 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
         lineColor: INK,
       },
       columnStyles: {
-        0: { cellWidth: 30 },
+        // SKU codes now follow a longer <category>-<component>-<metric>-<period>
+        // scheme (e.g. "cas-cennso-vcore-m1", 19 chars) — wider column + smaller
+        // font than the rest of the table so codes don't wrap mid-word.
+        0: { cellWidth: 45, fontSize: 8 },
         1: { cellWidth: 'auto' },
         2: { cellWidth: 18, halign: 'right' },
         3: { cellWidth: 28, halign: 'right' },
@@ -339,7 +382,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
           ? `-${quote.customer_discount_value}%`
           : `-${formatCurrency(quote.customer_discount_value ?? 0)}`
       doc.setTextColor(...GREEN)
-      doc.text(`Customer Discount (${label})`, marginX, y)
+      doc.text(`CNS Discount (${label})`, marginX, y)
       doc.text(`-${formatCurrency(customerDiscountAmount)}`, rightX, y, { align: 'right' })
       doc.setTextColor(...INK)
     }
@@ -359,65 +402,87 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     doc.setFont('helvetica', 'normal')
   }
 
-  // ── Payment Options (Monthly / Quarterly / Annual comparison) ──────────
-  // Very bottom of the document — lets the customer compare billing
-  // frequencies rather than seeing only the one currently selected in the app.
+  // ── Payment Schedule (Monthly / Quarterly / Annual, full period list) ──
+  // Lists every individual payment for each billing frequency, not just a
+  // one-line comparison — lets finance/procurement match against invoices.
   if (quote.quote_type === 'commitment' && maxTerm > 0) {
-    const cadenceFactors = await loadCadenceFactors(PAYMENT_OPTION_TIERS.map((t) => t.months))
+    const cadenceFactors = await loadCadenceFactors(PAYMENT_SCHEDULE_TIERS.map((t) => t.months))
 
-    ensureSpace(35)
+    ensureSpace(20)
     y += 10
-    doc.setFontSize(11)
+    doc.setFontSize(13)
     doc.setFont('helvetica', 'bold')
     doc.setTextColor(...INK)
-    doc.text('Payment Options', marginX, y)
-    y += 5
+    doc.text('Payment Schedule', marginX, y)
+    y += 8
 
-    const optionRows = PAYMENT_OPTION_TIERS.map((tier) => {
+    for (const tier of PAYMENT_SCHEDULE_TIERS) {
       const discountPct = cadenceFactors.get(tier.months) ?? 0
       const discountAmount = round2(rawContractTotal * discountPct / 100)
       const discountedTotal = rawContractTotal - discountAmount - customerDiscountAmount
-      return { ...tier, discountPct, discountedTotal }
-    })
+      const periodCount = Math.round(maxTerm / tier.months)
+      const basePerPeriod = round2(discountedTotal / periodCount)
 
-    autoTable(doc, {
-      startY: y,
-      margin: { left: marginX, right: marginX },
-      head: [['', ...optionRows.map((o) => o.label)]],
-      body: [
-        ['Upfront', ...optionRows.map((o) => `${o.months} month${o.months === 1 ? '' : 's'}`)],
-        ['Discount', ...optionRows.map((o) => `${o.discountPct}%`)],
-        [
-          { content: 'Discounted Contract Total', styles: { fontStyle: 'bold' as const } },
-          ...optionRows.map((o) => ({
-            content: formatCurrency(o.discountedTotal),
-            styles: { fontStyle: 'bold' as const },
-          })),
-        ],
-      ],
-      theme: 'plain',
-      styles: {
-        fontSize: 9,
-        textColor: INK,
-        lineColor: RULE,
-      },
-      headStyles: {
-        fontStyle: 'bold',
-        textColor: INK,
-        lineWidth: { bottom: 0.4 },
-        lineColor: INK,
-      },
-      columnStyles: {
-        0: { cellWidth: 55 },
-        1: { halign: 'right' },
-        2: { halign: 'right' },
-        3: { halign: 'right' },
-      },
-      didParseCell: rightAlignHeaderColumns([1, 2, 3]),
-    })
+      ensureSpace(20)
+      doc.setFontSize(11)
+      doc.setFont('helvetica', 'bold')
+      doc.setTextColor(...INK)
+      doc.text(
+        `${tier.label} (${tier.months} month${tier.months === 1 ? '' : 's'} upfront` +
+          `${discountPct > 0 ? `, -${discountPct}%` : ''})`,
+        marginX,
+        y
+      )
+      y += 5
 
-    y = (doc as any).lastAutoTable.finalY
+      const scheduleBody = Array.from({ length: periodCount }, (_, i) => {
+        // Last period absorbs the rounding remainder so the schedule sums exactly
+        // to the discounted total rather than drifting a cent or two off.
+        const amount = i === periodCount - 1
+          ? round2(discountedTotal - basePerPeriod * (periodCount - 1))
+          : basePerPeriod
+        return [`${tier.periodLabel} ${i + 1}`, formatCurrency(amount)]
+      })
+
+      autoTable(doc, {
+        startY: y,
+        margin: { left: marginX, right: marginX },
+        head: [[tier.periodLabel, 'Amount']],
+        body: scheduleBody,
+        theme: 'plain',
+        styles: {
+          fontSize: 9,
+          textColor: INK,
+          lineColor: RULE,
+        },
+        headStyles: {
+          fontStyle: 'bold',
+          textColor: INK,
+          lineWidth: { bottom: 0.4 },
+          lineColor: INK,
+        },
+        columnStyles: {
+          0: { cellWidth: 60 },
+          1: { cellWidth: 60, halign: 'right' },
+        },
+        didParseCell: rightAlignHeaderColumns([1]),
+      })
+
+      y = (doc as any).lastAutoTable.finalY + 10
+    }
   }
+
+  // ── Customer approval signature ─────────────────────────────────────────
+  ensureSpace(20)
+  doc.setDrawColor(...INK)
+  doc.setLineWidth(0.2)
+  doc.line(marginX, y, marginX + 60, y)
+  doc.line(110, y, 170, y)
+  y += 5
+  doc.setFontSize(8)
+  doc.setTextColor(...MUTED)
+  doc.text('Customer Approval', marginX, y)
+  doc.text('Date', 110, y)
 
   doc.save(`RateSheet-${quote.quote_number}.pdf`)
 }

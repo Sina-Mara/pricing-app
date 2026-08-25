@@ -338,7 +338,7 @@ export default function QuotePresent() {
 
           {hasCustomerDiscount && (
             <div className="mt-4 flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
-              <span className="text-sm font-medium">Special Discount ({customerDiscountLabel})</span>
+              <span className="text-sm font-medium">CNS Discount ({customerDiscountLabel})</span>
               <span className="text-sm font-semibold">−{formatCurrency(customerDiscountAmount)}</span>
             </div>
           )}
