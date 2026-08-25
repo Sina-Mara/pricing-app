@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
@@ -32,7 +33,7 @@ import {
 } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useToast } from '@/hooks/use-toast'
-import { Search, Package, Eye } from 'lucide-react'
+import { Search, Package, Eye, Pencil, Check, X } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
 import type { Sku, PricingModel, BaseCharge, SkuCategory } from '@/types/database'
 
@@ -53,6 +54,8 @@ export default function SKUs() {
   const [categoryFilter, setCategoryFilter] = useState<string>('all')
   const [selectedSku, setSelectedSku] = useState<SkuWithPricing | null>(null)
   const [showDialog, setShowDialog] = useState(false)
+  const [editingDescription, setEditingDescription] = useState(false)
+  const [draftDescription, setDraftDescription] = useState('')
   const { toast } = useToast()
   const queryClient = useQueryClient()
 
@@ -108,6 +111,7 @@ export default function SKUs() {
 
   const openSkuDialog = (sku: SkuWithPricing) => {
     setSelectedSku(sku)
+    setEditingDescription(false)
     setShowDialog(true)
   }
 
@@ -275,7 +279,54 @@ export default function SKUs() {
                   </div>
                   <div className="col-span-2">
                     <Label className="text-muted-foreground">Description</Label>
-                    <p>{selectedSku.description}</p>
+                    {editingDescription ? (
+                      <div className="space-y-2">
+                        <Textarea
+                          value={draftDescription}
+                          onChange={(e) => setDraftDescription(e.target.value)}
+                          rows={3}
+                        />
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            disabled={updateSku.isPending}
+                            onClick={() =>
+                              updateSku.mutate(
+                                { id: selectedSku.id, description: draftDescription },
+                                { onSuccess: () => setEditingDescription(false) }
+                              )
+                            }
+                          >
+                            <Check className="mr-1 h-4 w-4" />
+                            Save
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={updateSku.isPending}
+                            onClick={() => setEditingDescription(false)}
+                          >
+                            <X className="mr-1 h-4 w-4" />
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-start gap-2">
+                        <p className="flex-1">{selectedSku.description}</p>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 shrink-0"
+                          onClick={() => {
+                            setDraftDescription(selectedSku.description)
+                            setEditingDescription(true)
+                          }}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
               </TabsContent>
