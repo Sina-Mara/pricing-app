@@ -33,6 +33,7 @@ interface PricingModel {
   mode: 'stepped' | 'smooth' | 'manual';
   max_qty: number;
   breakpoints: number[] | null;
+  apply_term_discount: boolean;
 }
 
 interface Ladder {
@@ -254,6 +255,18 @@ function getTermFactor(ctx: PricingContext, category: string, termMonths: number
   const categoryFactors = ctx.termFactors.get(category) || ctx.termFactors.get('default');
   if (!categoryFactors) return 1;
   return interpolateTermFactor(categoryFactors, termMonths, category);
+}
+
+/**
+ * Term factor for a usage-based SKU, respecting its pricing model's
+ * apply_term_discount flag. Some usage is inherently on-demand/uncommitted
+ * (e.g. support hour overages) and must stay at the flat configured rate
+ * regardless of the package's commitment term.
+ */
+function getUsageTermFactor(ctx: PricingContext, skuId: string, category: string, termMonths: number): number {
+  const model = ctx.pricingModels.get(skuId);
+  if (model && model.apply_term_discount === false) return 1;
+  return getTermFactor(ctx, category, termMonths);
 }
 
 // ============================================================================
@@ -514,7 +527,7 @@ function calculateItemPricing(
     }
 
     // Term factor
-    const termFactor = getTermFactor(ctx, sku.category, termMonths);
+    const termFactor = getUsageTermFactor(ctx, sku.id, sku.category, termMonths);
     result.term_discount_pct = round2((1 - termFactor) * 100);
 
     // Environment factor
@@ -858,7 +871,7 @@ function calculateItemPricingWithPhases(
     }
 
     // Term factor
-    const termFactor = getTermFactor(ctx, sku.category, termMonths);
+    const termFactor = getUsageTermFactor(ctx, sku.id, sku.category, termMonths);
     result.term_discount_pct = round2((1 - termFactor) * 100);
 
     // Environment factor
