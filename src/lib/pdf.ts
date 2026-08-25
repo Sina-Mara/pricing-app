@@ -343,19 +343,12 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     : 0
   const rawContractTotal = quote.total_monthly * maxTerm
 
-  const hasPaymentDiscount =
-    quote.quote_type === 'commitment' &&
-    quote.payment_discount_pct != null &&
-    quote.payment_discount_pct > 0 &&
-    quote.payment_discount_amount != null
-
   const hasCustomerDiscount =
     quote.customer_discount_amount != null && quote.customer_discount_amount > 0
 
-  const paymentDiscountAmount = hasPaymentDiscount ? quote.payment_discount_amount! : 0
   const customerDiscountAmount = hasCustomerDiscount ? quote.customer_discount_amount! : 0
 
-  if (hasPaymentDiscount || hasCustomerDiscount) {
+  if (hasCustomerDiscount) {
     ensureSpace(30)
     y += 9
     doc.setFontSize(10)
@@ -363,29 +356,15 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     doc.text(`Contract Total (${maxTerm} months)`, marginX, y)
     doc.text(formatCurrency(rawContractTotal), rightX, y, { align: 'right' })
 
-    if (hasPaymentDiscount) {
-      y += 6
-      doc.setTextColor(...GREEN)
-      doc.text(
-        `Payment Discount (${quote.payment_upfront_months}m upfront, -${quote.payment_discount_pct}%)`,
-        marginX,
-        y
-      )
-      doc.text(`-${formatCurrency(paymentDiscountAmount)}`, rightX, y, { align: 'right' })
-      doc.setTextColor(...INK)
-    }
-
-    if (hasCustomerDiscount) {
-      y += 6
-      const label =
-        quote.customer_discount_type === 'percent'
-          ? `-${quote.customer_discount_value}%`
-          : `-${formatCurrency(quote.customer_discount_value ?? 0)}`
-      doc.setTextColor(...GREEN)
-      doc.text(`CNS Discount (${label})`, marginX, y)
-      doc.text(`-${formatCurrency(customerDiscountAmount)}`, rightX, y, { align: 'right' })
-      doc.setTextColor(...INK)
-    }
+    y += 6
+    const label =
+      quote.customer_discount_type === 'percent'
+        ? `-${quote.customer_discount_value}%`
+        : `-${formatCurrency(quote.customer_discount_value ?? 0)}`
+    doc.setTextColor(...GREEN)
+    doc.text(`CNS Discount (${label})`, marginX, y)
+    doc.text(`-${formatCurrency(customerDiscountAmount)}`, rightX, y, { align: 'right' })
+    doc.setTextColor(...INK)
 
     y += 7
     doc.setDrawColor(...RULE)
@@ -394,7 +373,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     doc.setFont('helvetica', 'bold')
     doc.text('Discounted Contract Total', marginX, y)
     doc.text(
-      formatCurrency(rawContractTotal - paymentDiscountAmount - customerDiscountAmount),
+      formatCurrency(rawContractTotal - customerDiscountAmount),
       rightX,
       y,
       { align: 'right' }
