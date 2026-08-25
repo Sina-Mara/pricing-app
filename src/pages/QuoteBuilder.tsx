@@ -136,6 +136,8 @@ export default function QuoteBuilder() {
   const [expandedPackages, setExpandedPackages] = useState<Set<string>>(new Set())
   const [showAddPackage, setShowAddPackage] = useState(false)
   const [showVersionDialog, setShowVersionDialog] = useState(false)
+  const [showExportDialog, setShowExportDialog] = useState(false)
+  const [exportStartDate, setExportStartDate] = useState('')
   const [newPackageName, setNewPackageName] = useState('')
   const [newPackageTerm, setNewPackageTerm] = useState(12)
   const [versionName, setVersionName] = useState('')
@@ -953,14 +955,19 @@ export default function QuoteBuilder() {
   }
 
   // Handle PDF export
-  const handleExportPDF = async () => {
+  const handleExportPDF = async (startDate: string) => {
     if (!quote) return
     try {
-      await generateQuotePDF(quote)
+      await generateQuotePDF(quote, startDate)
       toast({ title: 'PDF generated' })
     } catch (error: any) {
       toast({ variant: 'destructive', title: 'Failed to generate PDF', description: error.message })
     }
+  }
+
+  const openExportDialog = () => {
+    setExportStartDate(new Date().toISOString().slice(0, 10))
+    setShowExportDialog(true)
   }
 
   // Navigate to comparison view
@@ -1041,7 +1048,7 @@ export default function QuoteBuilder() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={handleExportPDF}>
+                    <DropdownMenuItem onClick={openExportDialog}>
                       <FileDown className="mr-2 h-4 w-4" />
                       Export PDF
                     </DropdownMenuItem>
@@ -2356,6 +2363,40 @@ export default function QuoteBuilder() {
               disabled={duplicateQuote.isPending}
             >
               {duplicateQuote.isPending ? 'Creating...' : 'Create Version'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Export PDF Dialog */}
+      <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Export PDF</DialogTitle>
+            <DialogDescription>
+              The Payment Schedule's due dates are calculated from this start date. It isn't saved with the quote.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-4">
+            <Label>Contract Start Date</Label>
+            <Input
+              type="date"
+              value={exportStartDate}
+              onChange={(e) => setExportStartDate(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowExportDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!exportStartDate}
+              onClick={() => {
+                setShowExportDialog(false)
+                handleExportPDF(exportStartDate)
+              }}
+            >
+              Generate PDF
             </Button>
           </DialogFooter>
         </DialogContent>

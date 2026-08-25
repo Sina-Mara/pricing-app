@@ -33,6 +33,16 @@ const PAYMENT_SCHEDULE_TIERS: { label: string; periodLabel: string; months: numb
   { label: 'Annual', periodLabel: 'Year', months: 12 },
 ]
 
+/** Adds calendar months to a date, clamping the day-of-month at the target month's
+ * length instead of overflowing (e.g. Jan 31 + 1 month → Feb 28/29, not Mar 3). */
+function addMonthsClamped(date: Date, months: number): Date {
+  const day = date.getDate()
+  const result = new Date(date.getFullYear(), date.getMonth() + months, 1)
+  const lastDayOfTargetMonth = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate()
+  result.setDate(Math.min(day, lastDayOfTargetMonth))
+  return result
+}
+
 /** Item table is sectioned by SKU category, in this fixed display order. */
 const CATEGORY_SECTION_ORDER: Array<'ccs' | 'cas' | 'cno'> = ['ccs', 'cas', 'cno']
 const CATEGORY_SECTION_LABELS: Record<string, string> = {
@@ -90,13 +100,18 @@ function formatCustomerDiscount(item: QuoteItem): string {
  */
 function rightAlignHeaderColumns(columnIndexes: number[]) {
   return (data: CellHookData) => {
-    if (data.section === 'head' && columnIndexes.includes(data.column.index)) {
+    if ((data.section === 'head' || data.section === 'foot') && columnIndexes.includes(data.column.index)) {
       data.cell.styles.halign = 'right'
     }
   }
 }
 
-export async function generateQuotePDF(quote: QuoteWithDetails) {
+export async function generateQuotePDF(quote: QuoteWithDetails, startDate: string) {
+  // Built from local date components rather than `new Date(startDate)`: a bare
+  // "YYYY-MM-DD" string parses as UTC midnight, which formatDate (rendering in
+  // the local timezone) can then display as the previous day in zones ahead of UTC.
+  const [startYear, startMonth, startDay] = startDate.split('-').map(Number)
+  const scheduleStartDate = new Date(startYear, startMonth - 1, startDay)
   const doc = new jsPDF({ orientation: 'landscape' })
   const pageWidth = doc.internal.pageSize.getWidth()
   const pageHeight = doc.internal.pageSize.getHeight()
@@ -395,10 +410,19 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
     doc.text('Payment Schedule', marginX, y)
     y += 8
 
+    // Computed up front so every cadence's "Total Saved" line can compare
+    // against Monthly's discounted total without recomputing it per tier (D4).
+    const discountedTotalsByMonths = new Map<number, number>()
     for (const tier of PAYMENT_SCHEDULE_TIERS) {
       const discountPct = cadenceFactors.get(tier.months) ?? 0
       const discountAmount = round2(rawContractTotal * discountPct / 100)
-      const discountedTotal = rawContractTotal - discountAmount - customerDiscountAmount
+      discountedTotalsByMonths.set(tier.months, rawContractTotal - discountAmount - customerDiscountAmount)
+    }
+    const monthlyDiscountedTotal = discountedTotalsByMonths.get(1)!
+
+    for (const tier of PAYMENT_SCHEDULE_TIERS) {
+      const discountPct = cadenceFactors.get(tier.months) ?? 0
+      const discountedTotal = discountedTotalsByMonths.get(tier.months)!
       const periodCount = Math.round(maxTerm / tier.months)
       const basePerPeriod = round2(discountedTotal / periodCount)
 
@@ -414,20 +438,33 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
       )
       y += 5
 
+      // Monthly is the savings baseline — it has nothing to compare itself against.
+      if (tier.months !== 1) {
+        const savedAmount = monthlyDiscountedTotal - discountedTotal
+        doc.setFontSize(9)
+        doc.setFont('helvetica', 'normal')
+        doc.setTextColor(...GREEN)
+        doc.text(`Total Saved (vs. Monthly): ${formatCurrency(savedAmount)}`, marginX, y)
+        doc.setTextColor(...INK)
+        y += 5
+      }
+
       const scheduleBody = Array.from({ length: periodCount }, (_, i) => {
         // Last period absorbs the rounding remainder so the schedule sums exactly
         // to the discounted total rather than drifting a cent or two off.
         const amount = i === periodCount - 1
           ? round2(discountedTotal - basePerPeriod * (periodCount - 1))
           : basePerPeriod
-        return [`${tier.periodLabel} ${i + 1}`, formatCurrency(amount)]
+        const dueDate = addMonthsClamped(scheduleStartDate, i * tier.months)
+        return [formatDate(dueDate), formatCurrency(amount)]
       })
 
       autoTable(doc, {
         startY: y,
         margin: { left: marginX, right: marginX },
-        head: [[tier.periodLabel, 'Amount']],
+        head: [['Due Date', 'Amount']],
         body: scheduleBody,
+        foot: [['Total', formatCurrency(discountedTotal)]],
         theme: 'plain',
         styles: {
           fontSize: 9,
@@ -438,6 +475,12 @@ export async function generateQuotePDF(quote: QuoteWithDetails) {
           fontStyle: 'bold',
           textColor: INK,
           lineWidth: { bottom: 0.4 },
+          lineColor: INK,
+        },
+        footStyles: {
+          fontStyle: 'bold',
+          textColor: INK,
+          lineWidth: { top: 0.4 },
           lineColor: INK,
         },
         columnStyles: {
