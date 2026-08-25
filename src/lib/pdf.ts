@@ -92,11 +92,19 @@ async function loadCadenceFactors(months: number[]): Promise<Map<number, number>
   return factors
 }
 
+/** formatCurrency's shared en-US/EUR format ("€1,234.56") reads fine in the app's UI
+ * font, but jsPDF's built-in Helvetica renders the symbol butted up against the digit
+ * tightly enough to look like a rendering glitch. Space it out for the PDF specifically
+ * — every other consumer of formatCurrency (the rest of the app) is unaffected. */
+function pdfCurrency(value: number): string {
+  return formatCurrency(value).replace('€', '€ ')
+}
+
 function formatCustomerDiscount(item: QuoteItem): string {
   if (item.customer_discount_value == null) return '-'
   return item.customer_discount_type === 'percent'
     ? `-${item.customer_discount_value}%`
-    : `-${formatCurrency(item.customer_discount_value)}`
+    : `-${pdfCurrency(item.customer_discount_value)}`
 }
 
 /**
@@ -302,9 +310,9 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
           item.sku?.code || '',
           item.sku?.description || '',
           item.quantity.toString(),
-          item.unit_price ? formatCurrency(item.unit_price) : '-',
+          item.unit_price ? pdfCurrency(item.unit_price) : '-',
           formatCustomerDiscount(item),
-          item.monthly_total ? formatCurrency(item.monthly_total) : '-',
+          item.monthly_total ? pdfCurrency(item.monthly_total) : '-',
         ])
       }
     }
@@ -349,12 +357,12 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
     doc.setFontSize(10)
     doc.setFont('helvetica', 'bold')
     doc.text('Package Subtotal', marginX, y)
-    doc.text(`${formatCurrency(pkg.subtotal_monthly - pkgOverageMonthly)}/month`, rightX, y, { align: 'right' })
+    doc.text(`${pdfCurrency(pkg.subtotal_monthly - pkgOverageMonthly)}/month`, rightX, y, { align: 'right' })
     y += 5
     doc.setFontSize(9)
     doc.setFont('helvetica', 'normal')
     doc.setTextColor(...MUTED)
-    doc.text(`Annual: ${formatCurrency(pkg.subtotal_annual - pkgOverageAnnual)}`, rightX, y, { align: 'right' })
+    doc.text(`Annual: ${pdfCurrency(pkg.subtotal_annual - pkgOverageAnnual)}`, rightX, y, { align: 'right' })
     doc.setTextColor(...INK)
     y += 12
 
@@ -377,12 +385,12 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
   doc.setFontSize(13)
   doc.setFont('helvetica', 'bold')
   doc.text('Grand Total', marginX, y)
-  doc.text(`${formatCurrency(adjustedTotalMonthly)}/month`, rightX, y, { align: 'right' })
+  doc.text(`${pdfCurrency(adjustedTotalMonthly)}/month`, rightX, y, { align: 'right' })
   y += 6
   doc.setFontSize(10)
   doc.setFont('helvetica', 'normal')
   doc.setTextColor(...MUTED)
-  doc.text(`Annual: ${formatCurrency(adjustedTotalAnnual)}`, rightX, y, { align: 'right' })
+  doc.text(`Annual: ${pdfCurrency(adjustedTotalAnnual)}`, rightX, y, { align: 'right' })
   doc.setTextColor(...INK)
 
   // ── Contract total, payment cadence discount, customer discount ────────
@@ -402,16 +410,16 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
     doc.setFontSize(10)
     doc.setFont('helvetica', 'normal')
     doc.text(`Contract Total (${maxTerm} months)`, marginX, y)
-    doc.text(formatCurrency(rawContractTotal), rightX, y, { align: 'right' })
+    doc.text(pdfCurrency(rawContractTotal), rightX, y, { align: 'right' })
 
     y += 6
     const label =
       quote.customer_discount_type === 'percent'
         ? `-${quote.customer_discount_value}%`
-        : `-${formatCurrency(quote.customer_discount_value ?? 0)}`
+        : `-${pdfCurrency(quote.customer_discount_value ?? 0)}`
     doc.setTextColor(...GREEN)
     doc.text(`CNS Discount (${label})`, marginX, y)
-    doc.text(`-${formatCurrency(customerDiscountAmount)}`, rightX, y, { align: 'right' })
+    doc.text(`-${pdfCurrency(customerDiscountAmount)}`, rightX, y, { align: 'right' })
     doc.setTextColor(...INK)
 
     y += 7
@@ -421,7 +429,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
     doc.setFont('helvetica', 'bold')
     doc.text('Discounted Contract Total', marginX, y)
     doc.text(
-      formatCurrency(rawContractTotal - customerDiscountAmount),
+      pdfCurrency(rawContractTotal - customerDiscountAmount),
       rightX,
       y,
       { align: 'right' }
@@ -455,7 +463,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
       packageName,
       item.sku?.code || '',
       item.sku?.description || '',
-      item.unit_price ? formatCurrency(item.unit_price) : '-',
+      item.unit_price ? pdfCurrency(item.unit_price) : '-',
       item.sku?.unit || '',
     ])
 
@@ -537,7 +545,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
         doc.setFontSize(9)
         doc.setFont('helvetica', 'normal')
         doc.setTextColor(...GREEN)
-        doc.text(`Total Saved (vs. Monthly): ${formatCurrency(savedAmount)}`, marginX, y)
+        doc.text(`Total Saved (vs. Monthly): ${pdfCurrency(savedAmount)}`, marginX, y)
         doc.setTextColor(...INK)
         y += 5
       }
@@ -549,7 +557,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
           ? round2(discountedTotal - basePerPeriod * (periodCount - 1))
           : basePerPeriod
         const dueDate = addMonthsClamped(scheduleStartDate, i * tier.months)
-        return [formatDate(dueDate), formatCurrency(amount)]
+        return [formatDate(dueDate), pdfCurrency(amount)]
       })
 
       autoTable(doc, {
@@ -557,7 +565,7 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
         margin: { left: marginX, right: marginX },
         head: [['Due Date', 'Amount']],
         body: scheduleBody,
-        foot: [['Total', formatCurrency(discountedTotal)]],
+        foot: [['Total', pdfCurrency(discountedTotal)]],
         theme: 'plain',
         styles: {
           fontSize: 9,
