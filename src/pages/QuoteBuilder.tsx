@@ -57,6 +57,9 @@ import {
   Repeat,
   Lock,
   Presentation,
+  Pencil,
+  Check,
+  X,
 } from 'lucide-react'
 import { formatCurrency, formatPercent, getStatusColor } from '@/lib/utils'
 import type {
@@ -138,6 +141,8 @@ export default function QuoteBuilder() {
   const [showVersionDialog, setShowVersionDialog] = useState(false)
   const [showExportDialog, setShowExportDialog] = useState(false)
   const [exportStartDate, setExportStartDate] = useState('')
+  const [editingPackageId, setEditingPackageId] = useState<string | null>(null)
+  const [draftPackageName, setDraftPackageName] = useState('')
   const [newPackageName, setNewPackageName] = useState('')
   const [newPackageTerm, setNewPackageTerm] = useState(12)
   const [versionName, setVersionName] = useState('')
@@ -775,6 +780,25 @@ export default function QuoteBuilder() {
     onSuccess: () => {
       refetchQuote()
       toast({ title: 'Package deleted' })
+    },
+  })
+
+  // Rename package
+  const renamePackage = useMutation({
+    mutationFn: async ({ packageId, packageName }: { packageId: string; packageName: string }) => {
+      const { error } = await supabase
+        .from('quote_packages')
+        .update({ package_name: packageName })
+        .eq('id', packageId)
+
+      if (error) throw error
+    },
+    onSuccess: () => {
+      refetchQuote()
+      toast({ title: 'Package renamed' })
+    },
+    onError: (error: any) => {
+      toast({ variant: 'destructive', title: 'Failed to rename package', description: error.message })
     },
   })
 
@@ -1547,7 +1571,55 @@ export default function QuoteBuilder() {
                       )}
                       <Package className="h-5 w-5 text-muted-foreground" />
                       <div>
-                        <div className="font-medium">{pkg.package_name}</div>
+                        {editingPackageId === pkg.id ? (
+                          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                            <Input
+                              value={draftPackageName}
+                              onChange={(e) => setDraftPackageName(e.target.value)}
+                              className="h-7 w-56"
+                              autoFocus
+                            />
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6"
+                              disabled={renamePackage.isPending}
+                              onClick={() =>
+                                renamePackage.mutate(
+                                  { packageId: pkg.id, packageName: draftPackageName },
+                                  { onSuccess: () => setEditingPackageId(null) }
+                                )
+                              }
+                            >
+                              <Check className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6"
+                              disabled={renamePackage.isPending}
+                              onClick={() => setEditingPackageId(null)}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            <div className="font-medium">{pkg.package_name}</div>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setDraftPackageName(pkg.package_name)
+                                setEditingPackageId(pkg.id)
+                              }}
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        )}
                         <div className="text-sm text-muted-foreground">
                           {pkg.term_months} months | {pkg.quote_items?.length || 0} items
                         </div>
