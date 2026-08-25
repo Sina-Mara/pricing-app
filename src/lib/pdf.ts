@@ -51,9 +51,16 @@ const CATEGORY_SECTION_LABELS: Record<string, string> = {
   cno: 'CNO — Cennso Network Operations',
 }
 
-/** Within the CCS section specifically, the 24/7 support SKUs sort last (they're
- * ordinary CCS-category items, not a separate section — just kept at the end of it). */
-const CCS_SORT_LAST_CODES = new Set(['ccs-24/7-m1', 'ccs-24/7-add-h1'])
+/** Within the CCS section specifically, the fixed 24/7 support base charge sorts last
+ * (it's an ordinary CCS-category item, not a separate section — just kept at the end). */
+const CCS_SORT_LAST_CODES = new Set(['ccs-24/7-m1'])
+
+/** Usage-based overage SKUs are pulled out of every package's item table entirely and
+ * rendered in one combined "Usage-Based Overages" section instead (SPEC-026 D1) — their
+ * amount can't be known in advance, so mixing them into the fixed-charge table would
+ * misrepresent them as a committed monthly cost. Excluded from Package Subtotal / Grand
+ * Total / Contract Total / Payment Schedule accordingly (SPEC-026 D2). */
+const OVERAGE_SKU_CODES = new Set(['ccs-24/7-add-h1'])
 
 const ITEM_TABLE_COLUMNS = 6 // SKU, Description, Qty, Unit Price, CNS Discount, Monthly
 
@@ -218,6 +225,14 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
   y += 8
 
   // ── Packages ─────────────────────────────────────────────────────────────
+  // Usage-based overage lines (SPEC-026) are pulled out of each package's item table as
+  // encountered below and collected here for a combined section rendered after Payment
+  // Schedule; their amounts are subtracted from every downstream total (Package Subtotal,
+  // Grand Total, Contract Total, Payment Schedule) since actual usage isn't known upfront.
+  const overageItems: { packageName: string; item: QuoteItem & { sku: Sku } }[] = []
+  let totalOverageMonthly = 0
+  let totalOverageAnnual = 0
+
   for (const pkg of quote.quote_packages) {
     if (!pkg.include_in_quote) continue
 
@@ -236,11 +251,24 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
 
     // Solution → Application → Component ordering (groupQuoteItems) gives the item order
     // used *within* each section; the sections themselves are by category, fixed order
-    // CCS → CAS → CNO, per review feedback. Within CCS specifically, the 24/7 support
-    // SKUs sort last — they're ordinary CCS items, not a section of their own.
-    const groupOrderedItems = groupQuoteItems(pkg.quote_items)
+    // CCS → CAS → CNO, per review feedback. Within CCS specifically, the fixed 24/7
+    // support base charge sorts last — it's an ordinary CCS item, not a section of its own.
+    const allPkgItems = groupQuoteItems(pkg.quote_items)
       .filter((row) => row.type === 'item')
       .map((row) => row.item)
+
+    const groupOrderedItems = allPkgItems.filter((item) => !OVERAGE_SKU_CODES.has(item.sku?.code ?? ''))
+
+    let pkgOverageMonthly = 0
+    let pkgOverageAnnual = 0
+    for (const item of allPkgItems) {
+      if (!OVERAGE_SKU_CODES.has(item.sku?.code ?? '')) continue
+      pkgOverageMonthly += item.monthly_total ?? 0
+      pkgOverageAnnual += item.annual_total ?? 0
+      overageItems.push({ packageName: pkg.package_name, item })
+    }
+    totalOverageMonthly += pkgOverageMonthly
+    totalOverageAnnual += pkgOverageAnnual
 
     const sectionedItems: { label: string; items: typeof groupOrderedItems }[] = []
     const seenCategories = new Set<string>()
@@ -321,12 +349,12 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
     doc.setFontSize(10)
     doc.setFont('helvetica', 'bold')
     doc.text('Package Subtotal', marginX, y)
-    doc.text(`${formatCurrency(pkg.subtotal_monthly)}/month`, rightX, y, { align: 'right' })
+    doc.text(`${formatCurrency(pkg.subtotal_monthly - pkgOverageMonthly)}/month`, rightX, y, { align: 'right' })
     y += 5
     doc.setFontSize(9)
     doc.setFont('helvetica', 'normal')
     doc.setTextColor(...MUTED)
-    doc.text(`Annual: ${formatCurrency(pkg.subtotal_annual)}`, rightX, y, { align: 'right' })
+    doc.text(`Annual: ${formatCurrency(pkg.subtotal_annual - pkgOverageAnnual)}`, rightX, y, { align: 'right' })
     doc.setTextColor(...INK)
     y += 12
 
@@ -334,6 +362,11 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
   }
 
   // ── Grand Total ──────────────────────────────────────────────────────────
+  // Excludes usage-based overage amounts (SPEC-026 D2) — everything from here down
+  // (Grand Total, Contract Total, Payment Schedule) reflects only committed charges.
+  const adjustedTotalMonthly = quote.total_monthly - totalOverageMonthly
+  const adjustedTotalAnnual = quote.total_annual - totalOverageAnnual
+
   ensureSpace(20)
 
   doc.setDrawColor(...INK)
@@ -344,19 +377,19 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
   doc.setFontSize(13)
   doc.setFont('helvetica', 'bold')
   doc.text('Grand Total', marginX, y)
-  doc.text(`${formatCurrency(quote.total_monthly)}/month`, rightX, y, { align: 'right' })
+  doc.text(`${formatCurrency(adjustedTotalMonthly)}/month`, rightX, y, { align: 'right' })
   y += 6
   doc.setFontSize(10)
   doc.setFont('helvetica', 'normal')
   doc.setTextColor(...MUTED)
-  doc.text(`Annual: ${formatCurrency(quote.total_annual)}`, rightX, y, { align: 'right' })
+  doc.text(`Annual: ${formatCurrency(adjustedTotalAnnual)}`, rightX, y, { align: 'right' })
   doc.setTextColor(...INK)
 
   // ── Contract total, payment cadence discount, customer discount ────────
   const maxTerm = quote.quote_packages.length > 0
     ? Math.max(...quote.quote_packages.map((p) => p.term_months))
     : 0
-  const rawContractTotal = quote.total_monthly * maxTerm
+  const rawContractTotal = adjustedTotalMonthly * maxTerm
 
   const hasCustomerDiscount =
     quote.customer_discount_amount != null && quote.customer_discount_amount > 0
@@ -394,6 +427,66 @@ export async function generateQuotePDF(quote: QuoteWithDetails, startDate: strin
       { align: 'right' }
     )
     doc.setFont('helvetica', 'normal')
+  }
+
+  // ── Usage-Based Overages (SPEC-026) ─────────────────────────────────────
+  // Sits between the monthly-charges summary above and the Payment Schedule
+  // below — after the reader sees what's committed, before they see how it's
+  // paid out. Rate-card info only — no quantity/amount column, since showing
+  // a computed figure here would look like a committed charge, which is
+  // exactly what this section exists to avoid (see D3). Excluded from every
+  // total above (D2).
+  if (overageItems.length > 0) {
+    ensureSpace(20)
+    y += 10
+    doc.setFontSize(13)
+    doc.setFont('helvetica', 'bold')
+    doc.setTextColor(...INK)
+    doc.text('Usage-Based Overages', marginX, y)
+    y += 6
+    doc.setFontSize(9)
+    doc.setFont('helvetica', 'normal')
+    doc.setTextColor(...MUTED)
+    doc.text('Billed based on actual usage each period — not included in the totals above.', marginX, y)
+    doc.setTextColor(...INK)
+    y += 6
+
+    const overageBody = overageItems.map(({ packageName, item }) => [
+      packageName,
+      item.sku?.code || '',
+      item.sku?.description || '',
+      item.unit_price ? formatCurrency(item.unit_price) : '-',
+      item.sku?.unit || '',
+    ])
+
+    autoTable(doc, {
+      startY: y,
+      margin: { left: marginX, right: marginX },
+      head: [['Package', 'SKU', 'Description', 'Rate', 'Unit']],
+      body: overageBody,
+      theme: 'plain',
+      styles: {
+        fontSize: 9,
+        textColor: INK,
+        lineColor: RULE,
+      },
+      headStyles: {
+        fontStyle: 'bold',
+        textColor: INK,
+        lineWidth: { bottom: 0.4 },
+        lineColor: INK,
+      },
+      columnStyles: {
+        0: { cellWidth: 45 },
+        1: { cellWidth: 40, fontSize: 8 },
+        2: { cellWidth: 'auto' },
+        3: { cellWidth: 28, halign: 'right' },
+        4: { cellWidth: 28 },
+      },
+      didParseCell: rightAlignHeaderColumns([3]),
+    })
+
+    y = (doc as any).lastAutoTable.finalY + 10
   }
 
   // ── Payment Schedule (Monthly / Quarterly / Annual, full period list) ──
